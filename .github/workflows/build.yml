@@ -47,7 +47,12 @@ jobs:
           test -n "$deb" && test -s "$deb"
           file "$dylib"
           lipo -archs "$dylib" | grep -qw arm64
-          dpkg-deb -c "$deb"
+          members="$(ar -t "$deb")"
+          grep -qx 'debian-binary' <<<"$members"
+          data_member="$(grep -E '^data\.tar\.(xz|lzma|gz|zst)$' <<<"$members")"
+          test -n "$data_member"
+          package_contents="$(ar -p "$deb" "$data_member" | tar -tf -)"
+          grep -qx './usr/lib/IOSDecryptHub/decrypt_helper.dylib' <<<"$package_contents"
 
       - name: Collect artifacts
         shell: bash
