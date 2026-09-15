@@ -516,11 +516,11 @@ static CCCryptorStatus DHHookedCCCrypt(CCOperation operation,
     return status;
 }
 
-typedef int (*DHCCPBKDFFn)(CCPBKDF, const char *, size_t, const uint8_t *, size_t,
+typedef int (*DHCCPBKDFFn)(CCPBKDFAlgorithm, const char *, size_t, const uint8_t *, size_t,
                            CCPseudoRandomAlgorithm, unsigned int, uint8_t *, size_t);
 static DHCCPBKDFFn gOriginalCCKeyDerivationPBKDF;
 
-static int DHHookedCCKeyDerivationPBKDF(CCPBKDF algorithm,
+static int DHHookedCCKeyDerivationPBKDF(CCPBKDFAlgorithm algorithm,
                                         const char *password,
                                         size_t passwordLength,
                                         const uint8_t *salt,
