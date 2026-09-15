@@ -6,6 +6,7 @@
 
 - CommonCrypto 一次性/流式 Digest、HMAC、对称加密与 PBKDF2 采集；
 - OpenSSL/BoringSSL EVP 初始化、Update、Final、Reset、Ctrl 和释放状态采集；
+- `dlopen`、`dlsym`、`dladdr` 动态加载诊断；
 - 当前进程 Mach-O 镜像清单、slide、段数量与基础运行时诊断；
 - 当前进程已加载 Mach-O 镜像导出：解析 `LC_ENCRYPTION_INFO(_64)`、合并内存解密段并清除 `cryptid`；
 - Keychain `SecItemCopyMatching/Add/Update/Delete` 采集；
@@ -64,6 +65,7 @@ Library/Preferences/com.decrypthelper.reconstructed.plist
   <key>crypto</key><true/>
   <key>keychain</key><true/>
   <key>file</key><false/>
+  <key>dynamic</key><false/>
   <key>anti_debug</key><true/>
   <key>jailbreak_hide</key><true/>
   <key>device_spoof</key><false/>
@@ -81,7 +83,7 @@ Library/Preferences/com.decrypthelper.reconstructed.plist
 </plist>
 ```
 
-反调试、越狱隐藏、设备伪装和高频文件采集默认关闭；加密、Keychain、网络采集与 HTTP 默认开启。
+反调试、越狱隐藏、设备伪装、高频文件采集和动态加载诊断默认关闭；加密、Keychain、网络采集与 HTTP 默认开启。
 每个流式输入/输出最多保留 1 MiB，避免无限占用内存。仅对你有权测试的 App 使用。
 
 ## 来源与许可证

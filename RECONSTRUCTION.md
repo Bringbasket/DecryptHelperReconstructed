@@ -11,7 +11,8 @@
 | CommonCrypto | `hooked_CC_*`、`DHCryptorState`、`DHHmacState` | 已恢复一次性与主要流式路径 |
 | OpenSSL EVP | `EVP_*Init/Update/Final`、`EVP_CIPHER_CTX_*` | 已恢复主要状态路径 |
 | Mach-O 镜像清单 | `_dyld_image_count`、`_dyld_get_image_name`、slide | 已恢复基础诊断路径 |
-| Mach-O Dump | `LC_ENCRYPTION_INFO(_64)`、内存解密段、`cryptid=0` | 已恢复当前进程镜像导出 |
+| Mach-O Dump | `LC_ENCRYPTION_INFO(_64)`、内存解密段、`cryptid=0`、FAT 切片选择 | 已恢复当前进程镜像导出 |
+| 动态加载 | `dlopen`、`dlsym`、`dladdr` | 已恢复诊断路径 |
 | Keychain | `SecItemCopyMatching/Add/Update/Delete` | 已按 API 行为重建 |
 | 文件事件 | open/read/write/pread/mmap/unlink/rename | 已重建，默认关闭 |
 | anti-debug | `ptrace(31)`、清 `CS_DEBUGGED`、清 `P_TRACED` | 已按位掩码重建 |

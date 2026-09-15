@@ -24,6 +24,7 @@ jobs:
           test -s Vendor/fishhook/LICENSE
           test -s Source/DHCommonCrypto.m
           test -s Source/DHAsymmetric.m
+          test -s Source/DHDynamic.m
           test -s Source/DHEVP.m
           test -s Source/DHImageInventory.m
           test -s Source/DHDump.m

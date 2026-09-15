@@ -1,6 +1,7 @@
 #import "DHConfig.h"
 #import "DHCommonCrypto.h"
 #import "DHAsymmetric.h"
+#import "DHDynamic.h"
 #import "DHFileHooks.h"
 #import "DHEVP.h"
 #import "DHHTTPServer.h"
@@ -22,6 +23,7 @@ static void DHBootstrap(void) {
 
         DHInstallCommonCryptoHooks();
         DHInstallAsymmetricHooks();
+        DHInstallDynamicHooks();
         DHInstallKeychainHooks();
         DHInstallFileHooks();
         DHInstallEVPHooks();

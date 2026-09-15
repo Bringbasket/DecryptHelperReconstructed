@@ -8,6 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL cryptoEnabled;
 @property (nonatomic, readonly) BOOL keychainEnabled;
 @property (nonatomic, readonly) BOOL fileEnabled;
+@property (nonatomic, readonly) BOOL dynamicEnabled;
 @property (nonatomic, readonly) BOOL antiDebugEnabled;
 @property (nonatomic, readonly) BOOL jailbreakHideEnabled;
 @property (nonatomic, readonly) BOOL deviceSpoofEnabled;

@@ -11,6 +11,7 @@ decrypt_helper_FILES = \
 	Source/DHConfig.m \
 	Source/DHCommonCrypto.m \
 	Source/DHAsymmetric.m \
+	Source/DHDynamic.m \
 	Source/DHKeychain.m \
 	Source/DHFileHooks.m \
 	Source/DHEVP.m \

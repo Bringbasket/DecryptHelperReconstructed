@@ -5,6 +5,7 @@
 @property (nonatomic) BOOL cryptoEnabled;
 @property (nonatomic) BOOL keychainEnabled;
 @property (nonatomic) BOOL fileEnabled;
+@property (nonatomic) BOOL dynamicEnabled;
 @property (nonatomic) BOOL antiDebugEnabled;
 @property (nonatomic) BOOL jailbreakHideEnabled;
 @property (nonatomic) BOOL deviceSpoofEnabled;
@@ -29,6 +30,7 @@
     self.cryptoEnabled = YES;
     self.keychainEnabled = YES;
     self.fileEnabled = NO;
+    self.dynamicEnabled = NO;
     self.antiDebugEnabled = NO;
     self.jailbreakHideEnabled = NO;
     self.deviceSpoofEnabled = NO;
@@ -48,6 +50,8 @@
     if ([value respondsToSelector:@selector(boolValue)]) self.keychainEnabled = [value boolValue];
     value = root[@"file"];
     if ([value respondsToSelector:@selector(boolValue)]) self.fileEnabled = [value boolValue];
+    value = root[@"dynamic"];
+    if ([value respondsToSelector:@selector(boolValue)]) self.dynamicEnabled = [value boolValue];
     value = root[@"anti_debug"];
     if ([value respondsToSelector:@selector(boolValue)]) self.antiDebugEnabled = [value boolValue];
     value = root[@"jailbreak_hide"];
@@ -74,6 +78,7 @@
         @"crypto": @(self.cryptoEnabled),
         @"keychain": @(self.keychainEnabled),
         @"file": @(self.fileEnabled),
+        @"dynamic": @(self.dynamicEnabled),
         @"anti_debug": @(self.antiDebugEnabled),
         @"jailbreak_hide": @(self.jailbreakHideEnabled),
         @"device_spoof": @(self.deviceSpoofEnabled),
