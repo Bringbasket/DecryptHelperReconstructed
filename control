@@ -1,0 +1,9 @@
+Package: com.decrypthelper.reconstructed
+Name: Decrypt Helper Reconstructed Engine
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Clean-room reconstruction of the IOSDecryptHub runtime engine.
+Maintainer: DecryptHelperReconstructed contributors
+Author: DecryptHelperReconstructed contributors
+Section: Development
+Depends: firmware (>= 14.0)

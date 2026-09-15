@@ -1,0 +1,66 @@
+name: Build rootless package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Theos
+        uses: Randomblock1/theos-action@4e23d15886bca77b5f7c462a82567e0de33ebe0b
+
+      - name: Validate source inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s Vendor/fishhook/fishhook.c
+          test -s Vendor/fishhook/LICENSE
+          test -s Source/DHCommonCrypto.m
+          test -s Source/DHAsymmetric.m
+          test -s Source/DHEVP.m
+          test -s Source/DHImageInventory.m
+          test -s Source/DHDump.m
+          test -s Source/DHKeychain.m
+          test -s Source/DHFileHooks.m
+
+      - name: Build package
+        shell: bash
+        run: |
+          set -euo pipefail
+          make clean package FINALPACKAGE=1 messages=yes
+
+      - name: Verify binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          dylib="$(find .theos -type f -name 'decrypt_helper.dylib' -print -quit)"
+          deb="$(find packages -type f -name '*.deb' -print -quit)"
+          test -n "$dylib" && test -s "$dylib"
+          test -n "$deb" && test -s "$deb"
+          file "$dylib"
+          lipo -archs "$dylib" | grep -qw arm64
+          dpkg-deb -c "$deb"
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          find packages -type f -name '*.deb' -exec cp {} artifacts/ \;
+          dylib="$(find .theos -type f -name 'decrypt_helper.dylib' -print -quit)"
+          cp "$dylib" artifacts/decrypt_helper.dylib
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: decrypt-helper-reconstructed-rootless
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
