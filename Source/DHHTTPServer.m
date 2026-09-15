@@ -42,7 +42,7 @@ static NSString * const kDHIndexHTML =
 "<header><h1>Decrypt Helper Reconstructed <span id='count'></span></h1>"
 "<button onclick='loadEvents()'>刷新</button><button onclick='clearEvents()'>清空</button></header>"
 "<main id='list'><div class='empty'>正在读取事件…</div></main><script>"
-"const esc=v=>String(v??'');async function loadEvents(){let r=await fetch('/api/events');let a=await r.json();"
+"const esc=v=>String(v==null?'':v);async function loadEvents(){let r=await fetch('/api/events');let a=await r.json();"
 "count.textContent='('+a.length+')';let root=document.querySelector('#list');root.textContent='';"
 "if(!a.length){root.innerHTML=\"<div class='empty'>暂无事件</div>\";return;}"
 "for(let e of a.slice().reverse()){let d=document.createElement('div');d.className='card';"
