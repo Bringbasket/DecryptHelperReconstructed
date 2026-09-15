@@ -52,6 +52,32 @@ static NSString * const kDHIndexHTML =
 "async function clearEvents(){await fetch('/api/clear',{method:'POST'});loadEvents()}loadEvents();setInterval(loadEvents,3000);"
 "</script></body></html>";
 
+static NSUInteger DHBoundedLimit(NSString *value, NSUInteger fallback, NSUInteger maximum) {
+    NSInteger parsed = value.integerValue;
+    if (parsed <= 0) return fallback;
+    return MIN((NSUInteger)parsed, maximum);
+}
+
+static NSArray<NSDictionary<NSString *, id> *> *DHEventSnapshot(NSUInteger limit) {
+    NSArray *events = [DHLogStore shared].dictionarySnapshot;
+    if (events.count <= limit) return events;
+    return [events subarrayWithRange:NSMakeRange(events.count - limit, limit)];
+}
+
+static NSString *DHQueryValue(NSString *target, NSString *key) {
+    NSRange question = [target rangeOfString:@"?"];
+    if (question.location == NSNotFound) return nil;
+    NSString *query = [target substringFromIndex:question.location + 1];
+    for (NSString *pair in [query componentsSeparatedByString:@"&"]) {
+        NSArray *parts = [pair componentsSeparatedByString:@"="];
+        if (parts.count < 2 || ![parts[0] isEqualToString:key]) continue;
+        NSArray *valueParts = [parts subarrayWithRange:NSMakeRange(1, parts.count - 1)];
+        NSString *encoded = [valueParts componentsJoinedByString:@"="];
+        return [encoded stringByRemovingPercentEncoding] ?: encoded;
+    }
+    return nil;
+}
+
 static BOOL DHSendAll(int socketFD, const void *bytes, size_t length) {
     const uint8_t *cursor = bytes;
     while (length) {
@@ -270,7 +296,8 @@ static void DHHandleClient(int socketFD) {
         NSString *firstLine = [header componentsSeparatedByString:@"\r\n"].firstObject ?: @"";
         NSArray<NSString *> *parts = [firstLine componentsSeparatedByString:@" "];
         NSString *method = parts.count > 0 ? parts[0] : @"";
-        NSString *path = parts.count > 1 ? [parts[1] componentsSeparatedByString:@"?"].firstObject : @"/";
+        NSString *target = parts.count > 1 ? parts[1] : @"/";
+        NSString *path = [target componentsSeparatedByString:@"?"].firstObject ?: @"/";
         NSUInteger bodyStart = NSMaxRange(headerEnd);
         NSData *body = requestData.length > bodyStart ?
                        [requestData subdataWithRange:NSMakeRange(bodyStart, requestData.length - bodyStart)] : NSData.data;
@@ -285,7 +312,8 @@ static void DHHandleClient(int socketFD) {
             health[@"ok"] = @YES;
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(health));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/events"]) {
-            DHSendResponse(socketFD, 200, @"application/json", DHJSONData([[DHLogStore shared] dictionarySnapshot]));
+            NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"limit"), 100, 500);
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHEventSnapshot(limit)));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/stats"]) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHRuntimeSnapshot()));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/images"]) {

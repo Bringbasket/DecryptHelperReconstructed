@@ -20,6 +20,7 @@
 - 监听 `0.0.0.0:8088...8108` 的轻量 Web UI、JSON API 和基础 MCP endpoint；
 - `/api/stats` 返回 `process.bundleId` 与引擎版本，可被 IOSDecryptHub 管理器识别。
 - `/api/images` 与 MCP `list_images` 提供当前进程加载镜像清单。
+- `/api/events` 默认返回最近 100 条事件，可用 `?limit=1..500` 调整；单条流式输入/输出最多保留 1 MiB。
 - `/api/dump` 与 MCP `dump_image` 可导出当前进程已加载镜像；输出固定在目标 App 沙盒的
   `Library/Caches/IOSDecryptHub/Dumps`，接口只接受 `outputName`，不允许通过网络指定任意路径。
 

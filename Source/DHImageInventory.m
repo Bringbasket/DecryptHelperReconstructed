@@ -5,18 +5,24 @@
 static NSUInteger DHImageSegmentCount(const struct mach_header *header) {
     if (!header) return 0;
     NSUInteger count = 0;
-    uintptr_t cursor = (uintptr_t)header + sizeof(struct mach_header);
-    if (header->magic == MH_MAGIC_64 || header->magic == MH_CIGAM_64) {
-        cursor = (uintptr_t)header + sizeof(struct mach_header_64);
+    BOOL is64 = header->magic == MH_MAGIC_64 || header->magic == MH_CIGAM_64;
+    uintptr_t cursor = (uintptr_t)header + (is64 ? sizeof(struct mach_header_64) : sizeof(struct mach_header));
+    uintptr_t commandEnd = cursor + header->sizeofcmds;
+    if (commandEnd < cursor) return 0;
+    if (is64) {
         const struct mach_header_64 *header64 = (const struct mach_header_64 *)header;
         for (uint32_t index = 0; index < header64->ncmds; index++) {
+            if (cursor > commandEnd || commandEnd - cursor < sizeof(struct load_command)) break;
             const struct load_command *command = (const struct load_command *)cursor;
+            if (command->cmdsize < sizeof(struct load_command) || command->cmdsize > commandEnd - cursor) break;
             if (command->cmd == LC_SEGMENT_64) count++;
             cursor += command->cmdsize;
         }
     } else {
         for (uint32_t index = 0; index < header->ncmds; index++) {
+            if (cursor > commandEnd || commandEnd - cursor < sizeof(struct load_command)) break;
             const struct load_command *command = (const struct load_command *)cursor;
+            if (command->cmdsize < sizeof(struct load_command) || command->cmdsize > commandEnd - cursor) break;
             if (command->cmd == LC_SEGMENT) count++;
             cursor += command->cmdsize;
         }
