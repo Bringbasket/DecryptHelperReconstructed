@@ -137,3 +137,17 @@ phase, progress, byte counts, error, output path, and download path.
 The built-in ZIP writer uses the interoperable STORE method and CRC32, preserves file modes and
 symbolic links, streams file contents, and does not require zlib. Classic ZIP limits apply: a
 single entry and the complete archive must remain below 4 GiB.
+
+## Network transfer and AEAD coverage
+
+- NSURLSession data, download, and upload task creation is captured for request/URL/resume-data,
+  NSData, file, and streamed-body variants. Completion-handler downloads are read before their
+  temporary file is released; delegate downloads are captured in
+  `URLSession:downloadTask:didFinishDownloadingToURL:` before the App moves the file.
+- Upload file source paths, names, sizes, and bounded previews are recorded. Stream bodies are
+  reported but never opened or consumed by the hook. Body, response, and file previews are capped
+  at 1 MiB.
+- OpenSSL 3 `EVP_EncryptInit_ex2`, `EVP_DecryptInit_ex2`, and `EVP_CipherInit_ex2` participate in
+  the same per-context state model as the legacy `_ex` entry points. AEAD AAD is captured from
+  `Update` calls with a null output buffer and from TLS/OSSL parameters; authentication tags are
+  captured through EVP ctrl, OSSL get/set params, and get/set tag entry points.
