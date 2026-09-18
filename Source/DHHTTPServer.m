@@ -5,10 +5,12 @@
 #import "DHDump.h"
 #import "DHLogStore.h"
 #import "DHHookRegistry.h"
+#import "DHAnalysis.h"
 #import <arpa/inet.h>
 #import <netinet/in.h>
 #import <sys/socket.h>
 #import <unistd.h>
+#import <stdlib.h>
 
 static int gListenSocket = -1;
 static uint16_t gHTTPPort;
@@ -58,6 +60,18 @@ static NSUInteger DHBoundedLimit(NSString *value, NSUInteger fallback, NSUIntege
     NSInteger parsed = value.integerValue;
     if (parsed <= 0) return fallback;
     return MIN((NSUInteger)parsed, maximum);
+}
+
+static BOOL DHParseHTTPAddress(NSString *value, uint64_t *address) {
+    if (!address || ![value isKindOfClass:NSString.class] || !value.length) return NO;
+    NSString *trimmed = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    const char *text = trimmed.UTF8String;
+    if (!text || !*text) return NO;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(text, &end, 0);
+    if (end == text || (end && *end != '\0')) return NO;
+    *address = (uint64_t)parsed;
+    return YES;
 }
 
 static NSArray<NSDictionary<NSString *, id> *> *DHEventSnapshot(NSUInteger limit) {
@@ -196,6 +210,34 @@ static NSArray *DHMCPTools(void) {
             @"hidden_schemes": @{ @"type": @"array", @"items": @{ @"type": @"string" } }
         }),
         DHMCPTool(@"list_hooks", @"Return hook installation status recorded during bootstrap.", @{})
+		,
+		DHMCPTool(@"read_memory", @"Read a bounded byte range from the current process.", @{
+			@"address": @{ @"type": @"string" },
+			@"length": @{ @"type": @"integer", @"minimum": @1, @"maximum": @1048576 }
+		}),
+		DHMCPTool(@"search_memory", @"Search readable segments of a loaded image for UTF-8, ASCII, or hex bytes.", @{
+			@"image": @{ @"type": @"string" },
+			@"pattern": @{ @"type": @"string" },
+			@"encoding": @{ @"type": @"string", @"enum": @[@"utf8", @"ascii", @"hex"] },
+			@"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @2000 }
+		}),
+		DHMCPTool(@"symbolicate", @"Resolve an in-process address to its loaded image, segment, and nearest symbol.", @{
+			@"address": @{ @"type": @"string" },
+			@"image": @{ @"type": @"string" }
+		}),
+		DHMCPTool(@"find_xrefs", @"Find pointer or string references in a loaded image.", @{
+			@"image": @{ @"type": @"string" },
+			@"target": @{ @"type": @"string" },
+			@"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @2000 }
+		}),
+		DHMCPTool(@"objc_classes", @"List Objective-C classes registered in the current process.", @{
+			@"contains": @{ @"type": @"string" },
+			@"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @5000 }
+		}),
+		DHMCPTool(@"objc_class_info", @"Inspect Objective-C methods, class methods, properties, protocols, and image.", @{
+			@"class": @{ @"type": @"string" },
+			@"methodLimit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @2000 }
+		})
     ];
 }
 
@@ -322,6 +364,43 @@ static NSDictionary *DHHandleMCP(NSDictionary *request) {
     if ([name isEqualToString:@"list_hooks"]) {
         return DHMCPToolResult(requestID, DHHookRegistrySnapshot());
     }
+    if ([name isEqualToString:@"read_memory"]) {
+        uint64_t address = 0;
+        NSString *addressValue = [arguments[@"address"] isKindOfClass:NSString.class] ? arguments[@"address"] : nil;
+        NSUInteger length = [arguments[@"length"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"length"] unsignedIntegerValue] : 0;
+        if (!DHParseHTTPAddress(addressValue, &address)) return DHMCPToolResult(requestID, @{ @"error": @"address must be a hexadecimal or decimal string" });
+        return DHMCPToolResult(requestID, DHReadMemory(address, length));
+    }
+    if ([name isEqualToString:@"search_memory"]) {
+        NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        NSString *pattern = [arguments[@"pattern"] isKindOfClass:NSString.class] ? arguments[@"pattern"] : nil;
+        NSString *encoding = [arguments[@"encoding"] isKindOfClass:NSString.class] ? arguments[@"encoding"] : nil;
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 100;
+        return DHMCPToolResult(requestID, DHSearchMemory(image, pattern, encoding, limit));
+    }
+    if ([name isEqualToString:@"symbolicate"]) {
+        uint64_t address = 0;
+        NSString *addressValue = [arguments[@"address"] isKindOfClass:NSString.class] ? arguments[@"address"] : nil;
+        NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        if (!DHParseHTTPAddress(addressValue, &address)) return DHMCPToolResult(requestID, @{ @"error": @"address must be a hexadecimal or decimal string" });
+        return DHMCPToolResult(requestID, DHSymbolicateAddress(address, image));
+    }
+    if ([name isEqualToString:@"find_xrefs"]) {
+        NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        NSString *target = [arguments[@"target"] isKindOfClass:NSString.class] ? arguments[@"target"] : nil;
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 100;
+        return DHMCPToolResult(requestID, DHFindXrefs(image, target, limit));
+    }
+    if ([name isEqualToString:@"objc_classes"]) {
+        NSString *contains = [arguments[@"contains"] isKindOfClass:NSString.class] ? arguments[@"contains"] : nil;
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 200;
+        return DHMCPToolResult(requestID, DHObjCClassList(contains, limit));
+    }
+    if ([name isEqualToString:@"objc_class_info"]) {
+        NSString *className = [arguments[@"class"] isKindOfClass:NSString.class] ? arguments[@"class"] : nil;
+        NSUInteger limit = [arguments[@"methodLimit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"methodLimit"] unsignedIntegerValue] : 500;
+        return DHMCPToolResult(requestID, DHObjCClassInfo(className, limit));
+    }
     if ([name isEqualToString:@"query_events"]) {
         NSString *category = [arguments[@"category"] isKindOfClass:NSString.class] ? arguments[@"category"] : nil;
         NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ?
@@ -413,6 +492,34 @@ static void DHHandleClient(int socketFD) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData([[DHConfig shared] publicSnapshot]));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/hooks"]) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHHookRegistrySnapshot()));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/memory"]) {
+            uint64_t address = 0;
+            NSUInteger length = DHBoundedLimit(DHQueryValue(target, @"length"), 0, 1024 * 1024);
+            BOOL success = DHParseHTTPAddress(DHQueryValue(target, @"address"), &address) && length > 0;
+            DHSendResponse(socketFD, success ? 200 : 400, @"application/json",
+                           DHJSONData(success ? DHReadMemory(address, length) : @{ @"error": @"address and length are required" }));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/symbolicate"]) {
+            uint64_t address = 0;
+            BOOL success = DHParseHTTPAddress(DHQueryValue(target, @"address"), &address);
+            DHSendResponse(socketFD, success ? 200 : 400, @"application/json",
+                           DHJSONData(success ? DHSymbolicateAddress(address, DHQueryValue(target, @"image")) : @{ @"error": @"address is required" }));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/search"]) {
+            NSString *pattern = DHQueryValue(target, @"pattern");
+            NSString *image = DHQueryValue(target, @"image");
+            NSString *encoding = DHQueryValue(target, @"encoding");
+            NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"limit"), 100, 2000);
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHSearchMemory(image, pattern, encoding, limit)));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/xrefs"]) {
+            NSString *targetValue = DHQueryValue(target, @"target");
+            NSString *image = DHQueryValue(target, @"image");
+            NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"limit"), 100, 2000);
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHFindXrefs(image, targetValue, limit)));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/objc/classes"]) {
+            NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"limit"), 200, 5000);
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHObjCClassList(DHQueryValue(target, @"contains"), limit)));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/objc/class"]) {
+            NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"methodLimit"), 500, 2000);
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHObjCClassInfo(DHQueryValue(target, @"class"), limit)));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/images"]) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHLoadedImageSnapshot()));
         } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/dump"]) {

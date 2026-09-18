@@ -104,3 +104,18 @@ The reconstructed engine exposes runtime controls through the local HTTP server 
 
 The same controls are available as MCP tools: `get_config`, `set_config`, `set_capture`,
 `set_pause`, `set_spoof`, and `list_hooks`.
+
+## In-process analysis API
+
+Analysis operates only on the current injected process and loaded Mach-O images.
+It does not open another process or accept a task port from the network.
+
+- MCP `read_memory`: bounded read (maximum 1 MiB), returning hex and base64.
+- MCP `search_memory`: search readable loaded-image segments using `utf8`, `ascii`, or `hex`.
+- MCP `symbolicate`: resolve an address with `dladdr` and the nearest Mach-O symbol.
+- MCP `find_xrefs`: find pointer references to an address/symbol, or string occurrences with `str:`.
+- MCP `objc_classes`: enumerate registered Objective-C classes.
+- MCP `objc_class_info`: inspect methods, class methods, properties, protocols, superclass, and image.
+
+Equivalent HTTP endpoints are `GET /api/memory`, `/api/search`, `/api/symbolicate`,
+`/api/xrefs`, `/api/objc/classes`, and `/api/objc/class`.

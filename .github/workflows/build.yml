@@ -30,6 +30,7 @@ jobs:
           test -s Source/DHDynamic.m
           test -s Source/DHEVP.m
           test -s Source/DHImageInventory.m
+          test -s Source/DHAnalysis.m
           test -s Source/DHDump.m
           test -s Source/DHKeychain.m
           test -s Source/DHFileHooks.m
