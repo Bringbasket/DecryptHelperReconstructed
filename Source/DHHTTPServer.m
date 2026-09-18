@@ -15,7 +15,7 @@
 
 static int gListenSocket = -1;
 static uint16_t gHTTPPort;
-static NSString * const kDHEngineVersion = @"0.3.0";
+static NSString * const kDHEngineVersion = @"0.4.0";
 
 static NSDictionary *DHRuntimeSnapshot(void) {
     NSBundle *bundle = NSBundle.mainBundle;
@@ -29,6 +29,7 @@ static NSDictionary *DHRuntimeSnapshot(void) {
             @"pid": @(processInfo.processIdentifier)
         },
         @"eventCount": @([DHLogStore shared].totalCount),
+        @"noiseCount": @([DHLogStore shared].noiseCount),
         @"imageCount": @(DHLoadedImageSnapshot().count),
         @"dumpTaskCount": @([DHDumpManager sharedManager].taskSnapshots.count),
         @"config": [[DHConfig shared] publicSnapshot]
@@ -53,12 +54,6 @@ static BOOL DHParseHTTPAddress(NSString *value, uint64_t *address) {
     return YES;
 }
 
-static NSArray<NSDictionary<NSString *, id> *> *DHEventSnapshot(NSUInteger limit) {
-    NSArray *events = [DHLogStore shared].dictionarySnapshot;
-    if (events.count <= limit) return events;
-    return [events subarrayWithRange:NSMakeRange(events.count - limit, limit)];
-}
-
 static NSString *DHQueryValue(NSString *target, NSString *key) {
     NSRange question = [target rangeOfString:@"?"];
     if (question.location == NSNotFound) return nil;
@@ -71,6 +66,39 @@ static NSString *DHQueryValue(NSString *target, NSString *key) {
         return [encoded stringByRemovingPercentEncoding] ?: encoded;
     }
     return nil;
+}
+
+static NSDictionary<NSString *, id> *DHEventFiltersFromTarget(NSString *target, NSUInteger fallbackLimit) {
+    NSMutableDictionary *filters = [NSMutableDictionary dictionary];
+    for (NSString *key in @[@"category", @"algorithm", @"operation", @"threadId", @"sinceMs", @"untilMs",
+                              @"afterSeq", @"beforeSeq", @"stack", @"contains", @"requestId", @"contextId", @"order"]) {
+        NSString *value = DHQueryValue(target, key);
+        if (value.length) filters[key] = value;
+    }
+    filters[@"limit"] = @(DHBoundedLimit(DHQueryValue(target, @"limit"), fallbackLimit, 2000));
+    return filters;
+}
+
+static NSArray<NSDictionary<NSString *, id> *> *DHEventSnapshot(NSString *target) {
+    NSMutableDictionary *filters = [DHEventFiltersFromTarget(target, 100) mutableCopy];
+    filters[@"order"] = @"desc";
+    NSArray *latestFirst = [[DHLogStore shared] queryWithFilters:filters noise:NO][@"events"];
+    return [[latestFirst reverseObjectEnumerator] allObjects];
+}
+
+static NSData *DHJSONLData(NSArray<NSDictionary<NSString *, id> *> *events) {
+    NSMutableData *result = [NSMutableData data];
+    for (NSDictionary *event in events) {
+        NSData *line = [NSJSONSerialization dataWithJSONObject:event options:0 error:nil];
+        if (!line) continue;
+        [result appendData:line];
+        [result appendBytes:"\n" length:1];
+    }
+    return result;
+}
+
+static NSString *DHJSONLString(NSArray<NSDictionary<NSString *, id> *> *events) {
+    return [[NSString alloc] initWithData:DHJSONLData(events) encoding:NSUTF8StringEncoding] ?: @"";
 }
 
 static BOOL DHSendAll(int socketFD, const void *bytes, size_t length) {
@@ -168,12 +196,31 @@ static NSDictionary *DHMCPTool(NSString *name, NSString *description, NSDictiona
     };
 }
 
+static NSDictionary *DHMCPEventProperties(void) {
+    return @{
+        @"category": @{ @"type": @"string" }, @"algorithm": @{ @"type": @"string" },
+        @"operation": @{ @"type": @"string" }, @"threadId": @{ @"type": @"integer" },
+        @"sinceMs": @{ @"type": @"integer" }, @"untilMs": @{ @"type": @"integer" },
+        @"afterSeq": @{ @"type": @"integer" }, @"beforeSeq": @{ @"type": @"integer" },
+        @"stack": @{ @"type": @"string" }, @"contains": @{ @"type": @"string" },
+        @"requestId": @{ @"type": @"string" }, @"contextId": @{ @"type": @"string" },
+        @"order": @{ @"type": @"string", @"enum": @[@"asc", @"desc"] },
+        @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @2000 }
+    };
+}
+
 static NSArray *DHMCPTools(void) {
     return @[
         DHMCPTool(@"get_stats", @"Return event counts and current runtime configuration.", @{}),
-        DHMCPTool(@"query_events", @"Return captured events, optionally filtered by category.", @{
-            @"category": @{ @"type": @"string" },
-            @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @500 }
+        DHMCPTool(@"query_events", @"Query retained events with server-side filters and a sequence cursor.", DHMCPEventProperties()),
+        DHMCPTool(@"get_event", @"Return one retained event by its global sequence.", @{
+            @"seq": @{ @"type": @"integer", @"minimum": @1 }, @"includeNoise": @{ @"type": @"boolean" }
+        }),
+        DHMCPTool(@"export_events", @"Export filtered retained events as JSON Lines text.", DHMCPEventProperties()),
+        DHMCPTool(@"query_noise", @"Query events routed to the Noise store.", DHMCPEventProperties()),
+        DHMCPTool(@"clear_noise", @"Clear retained Noise events and rotated Noise logs.", @{}),
+        DHMCPTool(@"set_category_pause", @"Pause or resume capture for one event category.", @{
+            @"category": @{ @"type": @"string" }, @"paused": @{ @"type": @"boolean" }
         }),
         DHMCPTool(@"get_spoof", @"Return anti-debug, jailbreak-hide and device-spoof configuration.", @{}),
         DHMCPTool(@"list_images", @"List Mach-O images loaded in the current process.", @{
@@ -398,6 +445,13 @@ static NSDictionary *DHHandleMCP(NSDictionary *request) {
         BOOL success = [[DHConfig shared] setPaused:paused error:&error];
         return DHMCPToolResult(requestID, @{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"" });
     }
+    if ([name isEqualToString:@"set_category_pause"]) {
+        NSString *category = [arguments[@"category"] isKindOfClass:NSString.class] ? arguments[@"category"] : nil;
+        BOOL paused = [arguments[@"paused"] respondsToSelector:@selector(boolValue)] ? [arguments[@"paused"] boolValue] : NO;
+        NSError *error = nil;
+        BOOL success = category.length && [[DHConfig shared] setPaused:paused forCategory:category error:&error];
+        return DHMCPToolResult(requestID, @{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"" });
+    }
     if ([name isEqualToString:@"set_spoof"]) {
         NSMutableDictionary *values = [NSMutableDictionary dictionary];
         for (NSString *key in @[@"anti_debug", @"jailbreak_hide", @"device_spoof", @"device", @"hidden_paths", @"hidden_images", @"hidden_schemes"]) if (arguments[key]) values[key] = arguments[key];
@@ -446,19 +500,27 @@ static NSDictionary *DHHandleMCP(NSDictionary *request) {
         return DHMCPToolResult(requestID, DHObjCClassInfo(className, limit));
     }
     if ([name isEqualToString:@"query_events"]) {
-        NSString *category = [arguments[@"category"] isKindOfClass:NSString.class] ? arguments[@"category"] : nil;
-        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ?
-                           [arguments[@"limit"] unsignedIntegerValue] : 100;
-        limit = MAX(1, MIN(limit, 500));
-        NSMutableArray *events = [NSMutableArray array];
-        for (NSDictionary *event in [[DHLogStore shared] dictionarySnapshot]) {
-            if (category.length && [event[@"category"] caseInsensitiveCompare:category] != NSOrderedSame) continue;
-            [events addObject:event];
-        }
-        if (events.count > limit) {
-            events = [[events subarrayWithRange:NSMakeRange(events.count - limit, limit)] mutableCopy];
-        }
-        return DHMCPToolResult(requestID, events);
+        return DHMCPToolResult(requestID, [[DHLogStore shared] queryWithFilters:arguments noise:NO]);
+    }
+    if ([name isEqualToString:@"query_noise"]) {
+        return DHMCPToolResult(requestID, [[DHLogStore shared] queryWithFilters:arguments noise:YES]);
+    }
+    if ([name isEqualToString:@"get_event"]) {
+        uint64_t sequence = [arguments[@"seq"] unsignedLongLongValue];
+        BOOL includeNoise = !arguments[@"includeNoise"] || [arguments[@"includeNoise"] boolValue];
+        NSDictionary *event = [[DHLogStore shared] eventForSequence:sequence includeNoise:includeNoise];
+        return DHMCPToolResult(requestID, event ?: @{ @"error": @"event not found", @"seq": @(sequence) });
+    }
+    if ([name isEqualToString:@"export_events"]) {
+        NSMutableDictionary *filters = [arguments mutableCopy];
+        if (!filters[@"limit"]) filters[@"limit"] = @2000;
+        NSDictionary *result = [[DHLogStore shared] queryWithFilters:filters noise:NO];
+        NSArray *events = result[@"events"];
+        return DHMCPToolResult(requestID, @{ @"format": @"jsonl", @"count": @(events.count), @"data": DHJSONLString(events) });
+    }
+    if ([name isEqualToString:@"clear_noise"]) {
+        [[DHLogStore shared] clearNoise];
+        return DHMCPToolResult(requestID, @{ @"cleared": @YES });
     }
     return DHError(requestID, -32602, @"Unknown tool");
 }
@@ -528,8 +590,20 @@ static void DHHandleClient(int socketFD) {
             health[@"ok"] = @YES;
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(health));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/events"]) {
-            NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"limit"), 100, 500);
-            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHEventSnapshot(limit)));
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHEventSnapshot(target)));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/events/get"]) {
+            uint64_t sequence = [DHQueryValue(target, @"seq") unsignedLongLongValue];
+            NSString *includeValue = DHQueryValue(target, @"includeNoise");
+            BOOL includeNoise = !includeValue.length || includeValue.boolValue;
+            NSDictionary *event = [[DHLogStore shared] eventForSequence:sequence includeNoise:includeNoise];
+            DHSendResponse(socketFD, event ? 200 : 404, @"application/json", DHJSONData(event ?: @{ @"error": @"event not found", @"seq": @(sequence) }));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/events/export"]) {
+            NSMutableDictionary *filters = [DHEventFiltersFromTarget(target, 2000) mutableCopy];
+            NSDictionary *result = [[DHLogStore shared] queryWithFilters:filters noise:NO];
+            DHSendResponse(socketFD, 200, @"application/x-ndjson; charset=utf-8", DHJSONLData(result[@"events"]));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/noise"]) {
+            NSDictionary *result = [[DHLogStore shared] queryWithFilters:DHEventFiltersFromTarget(target, 200) noise:YES];
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(result));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/stats"]) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHRuntimeSnapshot()));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/config"]) {
@@ -629,6 +703,9 @@ static void DHHandleClient(int socketFD) {
         } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/clear"]) {
             [[DHLogStore shared] clearAll];
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(@{ @"ok": @YES }));
+        } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/noise/clear"]) {
+            [[DHLogStore shared] clearNoise];
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(@{ @"ok": @YES }));
         } else if (([method isEqualToString:@"POST"] || [method isEqualToString:@"PUT"]) && [path isEqualToString:@"/api/config"]) {
             NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
             NSError *error = nil;
@@ -645,6 +722,13 @@ static void DHHandleClient(int socketFD) {
             NSError *error = nil;
             BOOL success = [request[@"paused"] respondsToSelector:@selector(boolValue)] && [[DHConfig shared] setPaused:[request[@"paused"] boolValue] error:&error];
             DHSendResponse(socketFD, success ? 200 : 400, @"application/json", DHJSONData(@{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"paused must be boolean" }));
+        } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/pause/category"]) {
+            NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
+            NSString *category = [request[@"category"] isKindOfClass:NSString.class] ? request[@"category"] : nil;
+            NSError *error = nil;
+            BOOL success = category.length && [request[@"paused"] respondsToSelector:@selector(boolValue)] &&
+                           [[DHConfig shared] setPaused:[request[@"paused"] boolValue] forCategory:category error:&error];
+            DHSendResponse(socketFD, success ? 200 : 400, @"application/json", DHJSONData(@{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"category and paused are required" }));
         } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/spoof"]) {
             NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
             NSError *error = nil;

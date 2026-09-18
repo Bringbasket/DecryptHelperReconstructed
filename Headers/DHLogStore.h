@@ -15,6 +15,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) uint64_t threadId;
 @property (nonatomic) uint64_t sequence;
 @property (nonatomic, copy) NSString *contextId;
+@property (nonatomic) BOOL noise;
+@property (nonatomic, copy, nullable) NSString *noiseRule;
 
 + (instancetype)entryWithCategory:(NSString *)category
                          algorithm:(NSString *)algorithm
@@ -29,9 +31,14 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)append:(DHLogEntry *)entry;
 - (NSArray<DHLogEntry *> *)snapshot;
 - (NSArray<NSDictionary<NSString *, id> *> *)dictionarySnapshot;
+- (nullable NSDictionary<NSString *, id> *)eventForSequence:(uint64_t)sequence includeNoise:(BOOL)includeNoise;
+- (NSDictionary<NSString *, id> *)queryWithFilters:(NSDictionary<NSString *, id> *)filters noise:(BOOL)noise;
 - (NSUInteger)totalCount;
+- (NSUInteger)noiseCount;
 - (void)clearAll;
+- (void)clearNoise;
 - (NSString *)logFilePath;
+- (NSString *)noiseLogFilePath;
 
 @end
 

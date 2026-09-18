@@ -28,6 +28,7 @@ jobs:
           python3 Tools/embed_web.py --check
           node Tools/check_web.js
           node Tools/check_phase1.js
+          node Tools/check_phase2.js
 
       - name: Build roothide arm64 and arm64e package
         shell: bash

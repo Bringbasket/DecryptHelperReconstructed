@@ -14,6 +14,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL deviceSpoofEnabled;
 @property (nonatomic, readonly) BOOL floatingUIEnabled;
 @property (nonatomic, readonly, getter=isPaused) BOOL paused;
+@property (nonatomic, readonly, copy) NSDictionary<NSString *, NSNumber *> *pausedByCategory;
+@property (nonatomic, readonly, copy) NSArray<NSDictionary<NSString *, id> *> *noiseRules;
 @property (nonatomic, readonly) uint16_t httpPort;
 @property (nonatomic, readonly, copy) NSArray<NSString *> *hiddenPaths;
 @property (nonatomic, readonly, copy) NSArray<NSString *> *hiddenImages;
@@ -24,7 +26,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)updateFromDictionary:(NSDictionary<NSString *, id> *)values error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)setCaptureEnabled:(BOOL)enabled forCategory:(NSString *)category error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)setPaused:(BOOL)paused error:(NSError * _Nullable * _Nullable)error;
+- (BOOL)setPaused:(BOOL)paused forCategory:(NSString *)category error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)captureEnabledForCategory:(NSString *)category;
+- (nullable NSString *)noiseActionForEvent:(NSDictionary<NSString *, id> *)event
+                           matchedRuleName:(NSString * _Nullable * _Nullable)ruleName;
 - (nullable NSString *)spoofValueForKey:(NSString *)key;
 - (NSDictionary<NSString *, id> *)publicSnapshot;
 
