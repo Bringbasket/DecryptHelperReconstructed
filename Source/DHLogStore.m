@@ -46,6 +46,7 @@ NSArray<NSString *> *DHFilteredCallStack(void) {
     entry.callStack = @[];
     entry.timestampMs = DHTimestampMilliseconds();
     entry.threadId = DHCurrentThreadId();
+    entry.contextId = [NSString stringWithFormat:@"thread:%llu", entry.threadId];
     return entry;
 }
 
@@ -57,6 +58,7 @@ NSArray<NSString *> *DHFilteredCallStack(void) {
         @"operation": self.operation ?: @"observe",
         @"timestampMs": @(self.timestampMs),
         @"threadId": @(self.threadId),
+        @"contextId": self.contextId ?: @"",
         @"callStack": self.callStack ?: @[]
     } mutableCopy];
     if (self.detail) dictionary[@"detail"] = self.detail;

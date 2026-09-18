@@ -97,8 +97,8 @@ static void DHUpdateDigest(void *context, const void *data, size_t length) {
     if (!context || !data || !length || ![DHConfig shared].cryptoEnabled) return;
     pthread_mutex_lock(&gDigestLock);
     DHDigestCapture *capture = gDigestCaptures[[NSValue valueWithPointer:context]];
-    if (capture.input.length < 1024 * 1024) {
-        NSUInteger available = 1024 * 1024 - capture.input.length;
+    if (capture.input.length < 4 * 1024 * 1024) {
+        NSUInteger available = 4 * 1024 * 1024 - capture.input.length;
         [capture.input appendBytes:data length:MIN((NSUInteger)length, available)];
     }
     pthread_mutex_unlock(&gDigestLock);
@@ -175,7 +175,7 @@ static NSString *DHHmacName(CCHmacAlgorithm algorithm);
 
 static pthread_mutex_t gHmacLock = PTHREAD_MUTEX_INITIALIZER;
 static NSMutableDictionary<NSValue *, DHHmacCapture *> *gHmacCaptures;
-static const NSUInteger kDHCaptureLimit = 1024 * 1024;
+static const NSUInteger kDHCaptureLimit = 4 * 1024 * 1024;
 
 static void DHAppendLimited(NSMutableData *target, const void *bytes, size_t length) {
     if (!target || !bytes || !length || target.length >= kDHCaptureLimit) return;
@@ -584,8 +584,6 @@ void DHInstallCommonCryptoHooks(void) {
         gDigestCaptures = [NSMutableDictionary dictionary];
         gHmacCaptures = [NSMutableDictionary dictionary];
         gCryptorCaptures = [NSMutableDictionary dictionary];
-        int status = rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
-        for (size_t i = 0; i < sizeof(bindings) / sizeof(bindings[0]); i++)
-            DHRegisterHook([NSString stringWithUTF8String:bindings[i].name], @"fishhook", status == 0);
+        DHRebindSymbols(bindings, sizeof(bindings) / sizeof(bindings[0]), @"fishhook");
     });
 }

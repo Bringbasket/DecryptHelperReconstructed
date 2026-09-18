@@ -14,6 +14,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) uint64_t timestampMs;
 @property (nonatomic) uint64_t threadId;
 @property (nonatomic) uint64_t sequence;
+@property (nonatomic, copy) NSString *contextId;
 
 + (instancetype)entryWithCategory:(NSString *)category
                          algorithm:(NSString *)algorithm

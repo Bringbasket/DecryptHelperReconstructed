@@ -82,7 +82,7 @@ static DHEVPSetTagFn gOriginalEVPCtxSetTag;
 static NSMutableDictionary<NSValue *, DHEVPCapture *> *gEVPCaptures;
 static pthread_mutex_t gEVPLock = PTHREAD_MUTEX_INITIALIZER;
 static __thread int gEVPLogGuard;
-static const NSUInteger kDHEVPCaptureLimit = 1024 * 1024;
+static const NSUInteger kDHEVPCaptureLimit = 4 * 1024 * 1024;
 typedef int (*DHEVPSizeFn)(DH_EVP_CIPHER_CTX *);
 static DHEVPSizeFn gEVPKeyLength;
 static DHEVPSizeFn gEVPIVLength;
@@ -472,8 +472,6 @@ void DHInstallEVPHooks(void) {
             {"EVP_CIPHER_CTX_get_tag", (void *)DHEVPCtxGetTag, (void **)&gOriginalEVPCtxGetTag},
             {"EVP_CIPHER_CTX_set_tag", (void *)DHEVPCtxSetTag, (void **)&gOriginalEVPCtxSetTag}
         };
-        int status = rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
-        for (size_t i = 0; i < sizeof(bindings) / sizeof(bindings[0]); i++)
-            DHRegisterHook([NSString stringWithUTF8String:bindings[i].name], @"fishhook", status == 0);
+        DHRebindSymbols(bindings, sizeof(bindings) / sizeof(bindings[0]), @"fishhook");
     });
 }

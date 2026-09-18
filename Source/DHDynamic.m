@@ -13,6 +13,7 @@ typedef int (*DHdladdrFn)(const void *, Dl_info *);
 static DHDlopenFn gOriginalDlopen;
 static DHDlsymFn gOriginalDlsym;
 static DHdladdrFn gOriginalDladdr;
+static __thread int gDlsymRouteGuard;
 
 static NSString *DHPathString(const char *value) {
     return value ? [NSString stringWithUTF8String:value] ?: @"" : @"";
@@ -45,14 +46,25 @@ static void *DHHookedDlopen(const char *path, int mode) {
 }
 
 static void *DHHookedDlsym(void *handle, const char *symbol) {
-    void *address = gOriginalDlsym ? gOriginalDlsym(handle, symbol) : NULL;
+    if (gDynamicGuard || gDlsymRouteGuard) {
+        return gOriginalDlsym ? gOriginalDlsym(handle, symbol) : NULL;
+    }
+
+    gDlsymRouteGuard++;
+    void *resolvedAddress = gOriginalDlsym ? gOriginalDlsym(handle, symbol) : NULL;
+    BOOL routed = NO;
+    void *returnedAddress = DHRouteResolvedSymbol(symbol, resolvedAddress, &routed);
+    gDlsymRouteGuard--;
+
     DHLogDynamic(@"dlsym", @{
         @"symbol": DHPathString(symbol),
         @"handle": [NSString stringWithFormat:@"%p", handle],
-        @"address": [NSString stringWithFormat:@"%p", address],
-        @"success": @(address != NULL)
+        @"resolvedAddress": [NSString stringWithFormat:@"%p", resolvedAddress],
+        @"returnedAddress": [NSString stringWithFormat:@"%p", returnedAddress],
+        @"routedToWrapper": @(routed),
+        @"success": @(returnedAddress != NULL)
     });
-    return address;
+    return returnedAddress;
 }
 
 static int DHHookedDladdr(const void *address, Dl_info *info) {
@@ -74,8 +86,6 @@ void DHInstallDynamicHooks(void) {
             {"dlsym", (void *)DHHookedDlsym, (void **)&gOriginalDlsym},
             {"dladdr", (void *)DHHookedDladdr, (void **)&gOriginalDladdr}
         };
-        int status = rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
-        for (size_t i = 0; i < sizeof(bindings) / sizeof(bindings[0]); i++)
-            DHRegisterHook([NSString stringWithUTF8String:bindings[i].name], @"fishhook", status == 0);
+        DHRebindSymbols(bindings, sizeof(bindings) / sizeof(bindings[0]), @"fishhook");
     });
 }

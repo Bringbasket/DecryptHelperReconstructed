@@ -337,9 +337,7 @@ void DHInstallSpoofHooks(void) {
             {"uname", (void *)DHHookedUname, (void **)&gOriginalUname},
             {"_dyld_get_image_name", (void *)DHHookedDyldImageName, (void **)&gOriginalDyldImageName},
         };
-        int status = rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
-        for (size_t i = 0; i < sizeof(bindings) / sizeof(bindings[0]); i++)
-            DHRegisterHook([NSString stringWithUTF8String:bindings[i].name], @"fishhook", status == 0);
+        DHRebindSymbols(bindings, sizeof(bindings) / sizeof(bindings[0]), @"fishhook");
 
         DHRegisterHook(@"UIDevice.systemVersion", @"objc", DHInstallMethod(UIDevice.class, @selector(systemVersion), (IMP)DHSpoofedSystemVersion, (IMP *)&gOriginalSystemVersion));
         DHRegisterHook(@"UIDevice.name", @"objc", DHInstallMethod(UIDevice.class, @selector(name), (IMP)DHSpoofedDeviceName, (IMP *)&gOriginalDeviceName));
