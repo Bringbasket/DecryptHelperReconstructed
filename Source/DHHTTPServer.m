@@ -592,7 +592,7 @@ static void DHHandleClient(int socketFD) {
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/events"]) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHEventSnapshot(target)));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/events/get"]) {
-            uint64_t sequence = [DHQueryValue(target, @"seq") unsignedLongLongValue];
+            uint64_t sequence = (uint64_t)[DHQueryValue(target, @"seq") longLongValue];
             NSString *includeValue = DHQueryValue(target, @"includeNoise");
             BOOL includeNoise = !includeValue.length || includeValue.boolValue;
             NSDictionary *event = [[DHLogStore shared] eventForSequence:sequence includeNoise:includeNoise];
