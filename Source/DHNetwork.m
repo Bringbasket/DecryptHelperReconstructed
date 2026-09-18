@@ -457,7 +457,7 @@ static IMP DHDelegateOriginalForObject(id object, NSMutableDictionary<NSString *
 }
 
 static void DHInstallDelegateMethod(id delegate, SEL selector, IMP replacement,
-                                    NSMutableDictionary<NSString *, id> **storage,
+                                    NSMutableDictionary<NSString *, id> * __strong *storage,
                                     const char *fallbackTypes) {
     if (!delegate || !selector || !replacement || !storage) return;
     Class cls = object_getClass(delegate);
