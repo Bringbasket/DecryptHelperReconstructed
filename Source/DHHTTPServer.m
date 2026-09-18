@@ -14,7 +14,7 @@
 
 static int gListenSocket = -1;
 static uint16_t gHTTPPort;
-static NSString * const kDHEngineVersion = @"0.1.0";
+static NSString * const kDHEngineVersion = @"0.2.0";
 
 static NSDictionary *DHRuntimeSnapshot(void) {
     NSBundle *bundle = NSBundle.mainBundle;
@@ -29,6 +29,7 @@ static NSDictionary *DHRuntimeSnapshot(void) {
         },
         @"eventCount": @([DHLogStore shared].totalCount),
         @"imageCount": @(DHLoadedImageSnapshot().count),
+        @"dumpTaskCount": @([DHDumpManager sharedManager].taskSnapshots.count),
         @"config": [[DHConfig shared] publicSnapshot]
     };
 }
@@ -105,10 +106,12 @@ static BOOL DHSendAll(int socketFD, const void *bytes, size_t length) {
     return YES;
 }
 
+static NSData *DHJSONData(id object);
+
 static void DHSendResponse(int socketFD, NSInteger status, NSString *contentType, NSData *body) {
-    NSString *reason = status == 200 ? @"OK" : status == 204 ? @"No Content" :
+    NSString *reason = status == 200 ? @"OK" : status == 202 ? @"Accepted" : status == 204 ? @"No Content" :
                        status == 400 ? @"Bad Request" : status == 404 ? @"Not Found" :
-                       status == 405 ? @"Method Not Allowed" : @"Internal Server Error";
+                       status == 405 ? @"Method Not Allowed" : status == 409 ? @"Conflict" : @"Internal Server Error";
     NSData *payload = body ?: NSData.data;
     NSString *header = [NSString stringWithFormat:
         @"HTTP/1.1 %ld %@\r\nContent-Type: %@\r\nContent-Length: %lu\r\n"
@@ -119,6 +122,39 @@ static void DHSendResponse(int socketFD, NSInteger status, NSString *contentType
     NSData *headerData = [header dataUsingEncoding:NSUTF8StringEncoding];
     DHSendAll(socketFD, headerData.bytes, headerData.length);
     if (payload.length) DHSendAll(socketFD, payload.bytes, payload.length);
+}
+
+static void DHSendFileResponse(int socketFD, NSString *path) {
+    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+    NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
+    if (!handle || !attributes) {
+        DHSendResponse(socketFD, 404, @"application/json", DHJSONData(@{ @"error": @"dump file not found" }));
+        return;
+    }
+    uint64_t length = [attributes[NSFileSize] unsignedLongLongValue];
+    NSString *fileName = [path.lastPathComponent stringByReplacingOccurrencesOfString:@"\"" withString:@""];
+    NSString *contentType = ([path.pathExtension.lowercaseString isEqualToString:@"ipa"] ||
+                             [path.pathExtension.lowercaseString isEqualToString:@"zip"])
+        ? @"application/zip" : @"application/octet-stream";
+    NSString *header = [NSString stringWithFormat:
+        @"HTTP/1.1 200 OK\r\nContent-Type: %@\r\nContent-Length: %llu\r\n"
+         "Content-Disposition: attachment; filename=\"%@\"\r\n"
+         "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+         contentType, (unsigned long long)length, fileName ?: @"dump.bin"];
+    NSData *headerData = [header dataUsingEncoding:NSUTF8StringEncoding];
+    if (!DHSendAll(socketFD, headerData.bytes, headerData.length)) {
+        [handle closeFile];
+        return;
+    }
+    uint64_t sent = 0;
+    while (sent < length) {
+        @autoreleasepool {
+            NSData *chunk = [handle readDataOfLength:(NSUInteger)MIN((uint64_t)(256 * 1024), length - sent)];
+            if (!chunk.length || !DHSendAll(socketFD, chunk.bytes, chunk.length)) break;
+            sent += chunk.length;
+        }
+    }
+    [handle closeFile];
 }
 
 static NSData *DHJSONData(id object) {
@@ -170,6 +206,16 @@ static NSArray *DHMCPTools(void) {
             @"image": @{ @"type": @"string" },
             @"outputName": @{ @"type": @"string" }
         }),
+        DHMCPTool(@"start_dump", @"Queue an asynchronous Mach-O, ZIP, or IPA dump task.", @{
+            @"image": @{ @"type": @"string" },
+            @"format": @{ @"type": @"string", @"enum": @[@"macho", @"zip", @"ipa"] },
+            @"outputName": @{ @"type": @"string" }
+        }),
+        DHMCPTool(@"dump_status", @"Return the progress and result of a dump task.", @{
+            @"id": @{ @"type": @"string" }
+        }),
+        DHMCPTool(@"list_dumps", @"List queued, running, completed, and failed dump tasks.", @{}),
+        DHMCPTool(@"clear_dump_history", @"Remove completed and failed tasks from in-memory history.", @{}),
         DHMCPTool(@"get_macho_info", @"Inspect load commands, segments, UUID, encryption state and symbols for a loaded 64-bit Mach-O image.", @{
             @"image": @{ @"type": @"string" }
         }),
@@ -302,6 +348,26 @@ static NSDictionary *DHHandleMCP(NSDictionary *request) {
             @"image": image ?: @"main",
             @"outputPath": outputPath ?: @""
         });
+    }
+    if ([name isEqualToString:@"start_dump"]) {
+        NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        NSString *format = [arguments[@"format"] isKindOfClass:NSString.class] ? arguments[@"format"] : @"macho";
+        NSString *outputName = [arguments[@"outputName"] isKindOfClass:NSString.class] ? arguments[@"outputName"] : nil;
+        NSError *error = nil;
+        NSDictionary *task = [[DHDumpManager sharedManager] startDumpWithImage:image format:format
+                                                                    outputName:outputName error:&error];
+        return DHMCPToolResult(requestID, task ?: @{ @"error": error.localizedDescription ?: @"could not start dump" });
+    }
+    if ([name isEqualToString:@"dump_status"]) {
+        NSString *identifier = [arguments[@"id"] isKindOfClass:NSString.class] ? arguments[@"id"] : nil;
+        NSDictionary *task = [[DHDumpManager sharedManager] taskStatus:identifier];
+        return DHMCPToolResult(requestID, task ?: @{ @"error": @"dump task not found" });
+    }
+    if ([name isEqualToString:@"list_dumps"]) {
+        return DHMCPToolResult(requestID, [[DHDumpManager sharedManager] taskSnapshots]);
+    }
+    if ([name isEqualToString:@"clear_dump_history"]) {
+        return DHMCPToolResult(requestID, @{ @"removed": @([[DHDumpManager sharedManager] clearCompletedTasks]) });
     }
     if ([name isEqualToString:@"get_macho_info"]) {
         NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
@@ -522,6 +588,37 @@ static void DHHandleClient(int socketFD) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHObjCClassInfo(DHQueryValue(target, @"class"), limit)));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/images"]) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHLoadedImageSnapshot()));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/dumps"]) {
+            DHSendResponse(socketFD, 200, @"application/json",
+                           DHJSONData([[DHDumpManager sharedManager] taskSnapshots]));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/dumps/status"]) {
+            NSDictionary *task = [[DHDumpManager sharedManager] taskStatus:DHQueryValue(target, @"id")];
+            DHSendResponse(socketFD, task ? 200 : 404, @"application/json",
+                           DHJSONData(task ?: @{ @"error": @"dump task not found" }));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/dumps/download"]) {
+            NSDictionary *task = [[DHDumpManager sharedManager] taskStatus:DHQueryValue(target, @"id")];
+            NSString *state = [task[@"state"] isKindOfClass:NSString.class] ? task[@"state"] : nil;
+            NSString *outputPath = [task[@"outputPath"] isKindOfClass:NSString.class] ? task[@"outputPath"] : nil;
+            if (!task) {
+                DHSendResponse(socketFD, 404, @"application/json", DHJSONData(@{ @"error": @"dump task not found" }));
+            } else if (![state isEqualToString:@"succeeded"] || !outputPath.length) {
+                DHSendResponse(socketFD, 409, @"application/json", DHJSONData(@{ @"error": @"dump task is not complete", @"task": task }));
+            } else {
+                DHSendFileResponse(socketFD, outputPath);
+            }
+        } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/dumps/start"]) {
+            NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
+            NSString *image = [request[@"image"] isKindOfClass:NSString.class] ? request[@"image"] : nil;
+            NSString *format = [request[@"format"] isKindOfClass:NSString.class] ? request[@"format"] : @"macho";
+            NSString *outputName = [request[@"outputName"] isKindOfClass:NSString.class] ? request[@"outputName"] : nil;
+            NSError *error = nil;
+            NSDictionary *task = [[DHDumpManager sharedManager] startDumpWithImage:image format:format
+                                                                        outputName:outputName error:&error];
+            DHSendResponse(socketFD, task ? 202 : 400, @"application/json",
+                           DHJSONData(task ?: @{ @"error": error.localizedDescription ?: @"could not start dump" }));
+        } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/dumps/clear-history"]) {
+            NSUInteger removed = [[DHDumpManager sharedManager] clearCompletedTasks];
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(@{ @"removed": @(removed) }));
         } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/dump"]) {
             NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
             NSString *image = [request[@"image"] isKindOfClass:NSString.class] ? request[@"image"] : nil;

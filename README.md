@@ -119,3 +119,21 @@ It does not open another process or accept a task port from the network.
 
 Equivalent HTTP endpoints are `GET /api/memory`, `/api/search`, `/api/symbolicate`,
 `/api/xrefs`, `/api/objc/classes`, and `/api/objc/class`.
+
+## Dump manager and archive export
+
+Dump work is serialized so multiple remote requests do not read and package the App bundle at
+the same time. Every task reports `queued`, `running`, `succeeded`, or `failed`, together with its
+phase, progress, byte counts, error, output path, and download path.
+
+- MCP `start_dump` accepts `format: macho|zip|ipa`, optional `image`, and optional `outputName`.
+- MCP `dump_status`, `list_dumps`, and `clear_dump_history` expose task state.
+- `POST /api/dumps/start` queues a task; `GET /api/dumps/status?id=...` polls it.
+- `GET /api/dumps` lists tasks and `GET /api/dumps/download?id=...` streams a completed file.
+- `macho` exports one loaded image. `zip` contains the decrypted image plus `manifest.json`.
+- `ipa` builds `Payload/<App>.app`, replacing the current App's main executable with its decrypted
+  image. IPA export intentionally rejects non-main images.
+
+The built-in ZIP writer uses the interoperable STORE method and CRC32, preserves file modes and
+symbolic links, streams file contents, and does not require zlib. Classic ZIP limits apply: a
+single entry and the complete archive must remain below 4 GiB.

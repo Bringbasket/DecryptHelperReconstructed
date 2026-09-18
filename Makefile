@@ -23,6 +23,7 @@ decrypt_helper_FILES = \
 	Source/DHImageInventory.m \
 	Source/DHDisassembler.m \
 	Source/DHAnalysis.m \
+	Source/DHZipWriter.m \
 	Source/DHDump.m \
 	Vendor/fishhook/fishhook.c \
 	Vendor/capstone/cs.c \
