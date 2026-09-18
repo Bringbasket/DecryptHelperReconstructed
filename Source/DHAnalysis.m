@@ -368,13 +368,13 @@ NSArray<NSDictionary<NSString *, id> *> *DHFindXrefs(NSString *selector, NSStrin
     return matches;
 }
 
-static NSDictionary *DHAnalysisMethod(id method, BOOL classMethod) {
-    SEL selector = method_getName((Method)method);
-    IMP implementation = method_getImplementation((Method)method);
+static NSDictionary *DHAnalysisMethod(Method method, BOOL classMethod) {
+    SEL selector = method_getName(method);
+    IMP implementation = method_getImplementation(method);
     Dl_info info = {0}; dladdr((const void *)(uintptr_t)implementation, &info);
     NSMutableDictionary *result = [@{
         @"selector": NSStringFromSelector(selector) ?: @"",
-        @"types": [NSString stringWithUTF8String:method_getTypeEncoding((Method)method) ?: ""] ?: @"",
+        @"types": [NSString stringWithUTF8String:method_getTypeEncoding(method) ?: ""] ?: @"",
         @"implementation": DHAnalysisHex((uint64_t)(uintptr_t)implementation),
         @"classMethod": @(classMethod)
     } mutableCopy];
