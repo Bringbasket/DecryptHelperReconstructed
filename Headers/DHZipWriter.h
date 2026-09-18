@@ -8,16 +8,18 @@ typedef void (^DHZipProgressBlock)(uint64_t completedBytes, uint64_t totalBytes)
 /// directories and symbolic links without depending on zlib or a third-party archive library.
 @interface DHZipWriter : NSObject
 
-- (nullable instancetype)initWithPath:(NSString *)path error:(NSError **)error;
-- (BOOL)addDirectory:(NSString *)archivePath error:(NSError **)error;
+- (nullable instancetype)initWithPath:(NSString *)path
+                                 error:(NSError * _Nullable * _Nullable)error;
+- (BOOL)addDirectory:(NSString *)archivePath
+                error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)addData:(NSData *)data
     archivePath:(NSString *)archivePath
-          error:(NSError **)error;
+          error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)addFileAtPath:(NSString *)sourcePath
           archivePath:(NSString *)archivePath
              progress:(nullable DHZipProgressBlock)progress
-                error:(NSError **)error;
-- (BOOL)close:(NSError **)error;
+                error:(NSError * _Nullable * _Nullable)error;
+- (BOOL)close:(NSError * _Nullable * _Nullable)error;
 
 @property (nonatomic, readonly) uint64_t bytesWritten;
 
