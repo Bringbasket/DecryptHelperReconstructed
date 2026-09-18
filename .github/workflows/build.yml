@@ -38,8 +38,24 @@ jobs:
       - name: Build package
         shell: bash
         run: |
-          set -euo pipefail
-          make clean package FINALPACKAGE=1 messages=yes
+          set -o pipefail
+          make clean package FINALPACKAGE=1 messages=yes 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done < <(grep -E '(^|[[:space:]])(error:|fatal error:|clang: error:|make\[[0-9]+\]: \*\*\*)' build.log || true)
+          fi
+          exit "$status"
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: decrypt-helper-build-log
+          path: build.log
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Verify binaries
         shell: bash
