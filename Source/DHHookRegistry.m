@@ -50,7 +50,7 @@ NSArray<NSDictionary<NSString *, id> *> *DHHookRegistrySnapshot(void) {
     return result ?: @[];
 }
 
-int DHRebindSymbols(const struct rebinding bindings[], size_t count, NSString *type) {
+int DHRebindSymbols(const struct rebinding *bindings, size_t count, NSString *type) {
     if (!bindings || !count) return -1;
     DHEnsureHookRegistry();
 
