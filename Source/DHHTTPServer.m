@@ -4,6 +4,7 @@
 #import "DHDisassembler.h"
 #import "DHDump.h"
 #import "DHLogStore.h"
+#import "DHHookRegistry.h"
 #import <arpa/inet.h>
 #import <netinet/in.h>
 #import <sys/socket.h>
@@ -173,7 +174,28 @@ static NSArray *DHMCPTools(void) {
             @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @256 }
         }),
         DHMCPTool(@"reload_config", @"Reload configuration from the host App sandbox.", @{}),
-        DHMCPTool(@"clear_events", @"Clear retained events and the JSONL log.", @{})
+        DHMCPTool(@"clear_events", @"Clear retained events and the JSONL log.", @{}),
+        DHMCPTool(@"get_config", @"Return the mutable runtime configuration.", @{}),
+        DHMCPTool(@"set_config", @"Update and persist runtime configuration fields.", @{
+            @"config": @{ @"type": @"object" }
+        }),
+        DHMCPTool(@"set_capture", @"Enable or disable one capture category at runtime.", @{
+            @"category": @{ @"type": @"string", @"enum": @[@"network", @"crypto", @"keychain", @"file", @"dynamic"] },
+            @"enabled": @{ @"type": @"boolean" }
+        }),
+        DHMCPTool(@"set_pause", @"Pause or resume all event capture without removing hooks.", @{
+            @"paused": @{ @"type": @"boolean" }
+        }),
+        DHMCPTool(@"set_spoof", @"Update anti-debug, jailbreak-hide, device-spoof and hide-rule settings.", @{
+            @"anti_debug": @{ @"type": @"boolean" },
+            @"jailbreak_hide": @{ @"type": @"boolean" },
+            @"device_spoof": @{ @"type": @"boolean" },
+            @"device": @{ @"type": @"object" },
+            @"hidden_paths": @{ @"type": @"array", @"items": @{ @"type": @"string" } },
+            @"hidden_images": @{ @"type": @"array", @"items": @{ @"type": @"string" } },
+            @"hidden_schemes": @{ @"type": @"array", @"items": @{ @"type": @"string" } }
+        }),
+        DHMCPTool(@"list_hooks", @"Return hook installation status recorded during bootstrap.", @{})
     ];
 }
 
@@ -268,6 +290,38 @@ static NSDictionary *DHHandleMCP(NSDictionary *request) {
         [[DHLogStore shared] clearAll];
         return DHMCPToolResult(requestID, @{ @"cleared": @YES });
     }
+    if ([name isEqualToString:@"get_config"]) {
+        return DHMCPToolResult(requestID, [[DHConfig shared] publicSnapshot]);
+    }
+    if ([name isEqualToString:@"set_config"]) {
+        NSDictionary *config = [arguments[@"config"] isKindOfClass:NSDictionary.class] ? arguments[@"config"] : arguments;
+        NSError *error = nil;
+        BOOL success = [[DHConfig shared] updateFromDictionary:config error:&error];
+        return DHMCPToolResult(requestID, @{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"" });
+    }
+    if ([name isEqualToString:@"set_capture"]) {
+        NSString *category = [arguments[@"category"] isKindOfClass:NSString.class] ? arguments[@"category"] : nil;
+        BOOL enabled = [arguments[@"enabled"] respondsToSelector:@selector(boolValue)] ? [arguments[@"enabled"] boolValue] : NO;
+        NSError *error = nil;
+        BOOL success = [[DHConfig shared] setCaptureEnabled:enabled forCategory:category error:&error];
+        return DHMCPToolResult(requestID, @{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"" });
+    }
+    if ([name isEqualToString:@"set_pause"]) {
+        BOOL paused = [arguments[@"paused"] respondsToSelector:@selector(boolValue)] ? [arguments[@"paused"] boolValue] : NO;
+        NSError *error = nil;
+        BOOL success = [[DHConfig shared] setPaused:paused error:&error];
+        return DHMCPToolResult(requestID, @{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"" });
+    }
+    if ([name isEqualToString:@"set_spoof"]) {
+        NSMutableDictionary *values = [NSMutableDictionary dictionary];
+        for (NSString *key in @[@"anti_debug", @"jailbreak_hide", @"device_spoof", @"device", @"hidden_paths", @"hidden_images", @"hidden_schemes"]) if (arguments[key]) values[key] = arguments[key];
+        NSError *error = nil;
+        BOOL success = [[DHConfig shared] updateFromDictionary:values error:&error];
+        return DHMCPToolResult(requestID, @{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"" });
+    }
+    if ([name isEqualToString:@"list_hooks"]) {
+        return DHMCPToolResult(requestID, DHHookRegistrySnapshot());
+    }
     if ([name isEqualToString:@"query_events"]) {
         NSString *category = [arguments[@"category"] isKindOfClass:NSString.class] ? arguments[@"category"] : nil;
         NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ?
@@ -355,6 +409,10 @@ static void DHHandleClient(int socketFD) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHEventSnapshot(limit)));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/stats"]) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHRuntimeSnapshot()));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/config"]) {
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData([[DHConfig shared] publicSnapshot]));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/hooks"]) {
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHHookRegistrySnapshot()));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/images"]) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHLoadedImageSnapshot()));
         } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/dump"]) {
@@ -373,6 +431,27 @@ static void DHHandleClient(int socketFD) {
         } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/clear"]) {
             [[DHLogStore shared] clearAll];
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(@{ @"ok": @YES }));
+        } else if (([method isEqualToString:@"POST"] || [method isEqualToString:@"PUT"]) && [path isEqualToString:@"/api/config"]) {
+            NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
+            NSError *error = nil;
+            BOOL success = [request isKindOfClass:NSDictionary.class] && [[DHConfig shared] updateFromDictionary:request error:&error];
+            DHSendResponse(socketFD, success ? 200 : 400, @"application/json", DHJSONData(@{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"invalid configuration" }));
+        } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/capture"]) {
+            NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
+            NSString *category = [request[@"category"] isKindOfClass:NSString.class] ? request[@"category"] : nil;
+            NSError *error = nil;
+            BOOL success = category.length && [request[@"enabled"] respondsToSelector:@selector(boolValue)] && [[DHConfig shared] setCaptureEnabled:[request[@"enabled"] boolValue] forCategory:category error:&error];
+            DHSendResponse(socketFD, success ? 200 : 400, @"application/json", DHJSONData(@{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"invalid capture category" }));
+        } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/pause"]) {
+            NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
+            NSError *error = nil;
+            BOOL success = [request[@"paused"] respondsToSelector:@selector(boolValue)] && [[DHConfig shared] setPaused:[request[@"paused"] boolValue] error:&error];
+            DHSendResponse(socketFD, success ? 200 : 400, @"application/json", DHJSONData(@{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"paused must be boolean" }));
+        } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/spoof"]) {
+            NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
+            NSError *error = nil;
+            BOOL success = [request isKindOfClass:NSDictionary.class] && [[DHConfig shared] updateFromDictionary:request error:&error];
+            DHSendResponse(socketFD, success ? 200 : 400, @"application/json", DHJSONData(@{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"invalid spoof configuration" }));
         } else if ([path isEqualToString:@"/api/mcp"] && ![method isEqualToString:@"POST"]) {
             DHSendResponse(socketFD, 405, @"application/json",
                            DHJSONData(@{ @"error": @"MCP endpoint accepts POST only" }));

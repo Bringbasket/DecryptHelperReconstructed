@@ -1,6 +1,7 @@
 #import "DHEVP.h"
 #import "DHConfig.h"
 #import "DHLogStore.h"
+#import "DHHookRegistry.h"
 #import "fishhook.h"
 #include <pthread.h>
 #include <stdint.h>
@@ -251,6 +252,8 @@ void DHInstallEVPHooks(void) {
             {"EVP_CIPHER_CTX_free", (void *)DHEVPCtxFree, (void **)&gOriginalEVPCtxFree},
             {"EVP_CIPHER_CTX_ctrl", (void *)DHEVPCtxCtrl, (void **)&gOriginalEVPCtxCtrl}
         };
-        rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
+        int status = rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
+        for (size_t i = 0; i < sizeof(bindings) / sizeof(bindings[0]); i++)
+            DHRegisterHook([NSString stringWithUTF8String:bindings[i].name], @"fishhook", status == 0);
     });
 }

@@ -1,6 +1,7 @@
 #import "DHAsymmetric.h"
 #import "DHConfig.h"
 #import "DHLogStore.h"
+#import "DHHookRegistry.h"
 #import "fishhook.h"
 #import <Security/Security.h>
 
@@ -105,6 +106,8 @@ void DHInstallAsymmetricHooks(void) {
             {"SecKeyCreateDecryptedData", (void *)DHHookedSecKeyCreateDecryptedData,
              (void **)&gOriginalSecKeyCreateDecryptedData}
         };
-        rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
+        int status = rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
+        for (size_t i = 0; i < sizeof(bindings) / sizeof(bindings[0]); i++)
+            DHRegisterHook([NSString stringWithUTF8String:bindings[i].name], @"fishhook", status == 0);
     });
 }

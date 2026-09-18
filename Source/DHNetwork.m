@@ -1,6 +1,7 @@
 #import "DHNetwork.h"
 #import "DHConfig.h"
 #import "DHLogStore.h"
+#import "DHHookRegistry.h"
 #import "fishhook.h"
 #import <objc/runtime.h>
 
@@ -223,26 +224,26 @@ static int DHHookedSSLReadEx(void *ssl, void *buffer, size_t length, size_t *rea
 void DHInstallNetworkHooks(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        DHInstallMethod(NSURLSession.class,
-                        @selector(dataTaskWithRequest:completionHandler:),
-                        (IMP)DHDataTaskWithRequestCompletion,
-                        (IMP *)&gOriginalDataTaskRequestCompletion);
-        DHInstallMethod(NSURLSession.class,
-                        @selector(dataTaskWithURL:completionHandler:),
-                        (IMP)DHDataTaskWithURLCompletion,
-                        (IMP *)&gOriginalDataTaskURLCompletion);
-        DHInstallMethod(NSURLSessionTask.class,
-                        @selector(resume),
-                        (IMP)DHTaskResume,
-                        (IMP *)&gOriginalTaskResume);
-        DHInstallClassMethod(NSURLConnection.class,
-                             @selector(sendSynchronousRequest:returningResponse:error:),
-                             (IMP)DHHookedSynchronousRequest,
-                             (IMP *)&gOriginalSynchronousRequest);
-        DHInstallClassMethod(NSURLConnection.class,
-                             @selector(sendAsynchronousRequest:queue:completionHandler:),
-                             (IMP)DHHookedAsynchronousRequest,
-                             (IMP *)&gOriginalAsynchronousRequest);
+        DHRegisterHook(@"NSURLSession.dataTaskWithRequest:completionHandler:", @"objc", DHInstallMethod(NSURLSession.class,
+                         @selector(dataTaskWithRequest:completionHandler:),
+                         (IMP)DHDataTaskWithRequestCompletion,
+                         (IMP *)&gOriginalDataTaskRequestCompletion));
+        DHRegisterHook(@"NSURLSession.dataTaskWithURL:completionHandler:", @"objc", DHInstallMethod(NSURLSession.class,
+                         @selector(dataTaskWithURL:completionHandler:),
+                         (IMP)DHDataTaskWithURLCompletion,
+                         (IMP *)&gOriginalDataTaskURLCompletion));
+        DHRegisterHook(@"NSURLSessionTask.resume", @"objc", DHInstallMethod(NSURLSessionTask.class,
+                         @selector(resume),
+                         (IMP)DHTaskResume,
+                         (IMP *)&gOriginalTaskResume));
+        DHRegisterHook(@"NSURLConnection.sendSynchronousRequest:returningResponse:error:", @"objc", DHInstallClassMethod(NSURLConnection.class,
+                         @selector(sendSynchronousRequest:returningResponse:error:),
+                         (IMP)DHHookedSynchronousRequest,
+                         (IMP *)&gOriginalSynchronousRequest));
+        DHRegisterHook(@"NSURLConnection.sendAsynchronousRequest:queue:completionHandler:", @"objc", DHInstallClassMethod(NSURLConnection.class,
+                         @selector(sendAsynchronousRequest:queue:completionHandler:),
+                         (IMP)DHHookedAsynchronousRequest,
+                         (IMP *)&gOriginalAsynchronousRequest));
 
         struct rebinding bindings[] = {
             {"SSL_write", (void *)DHHookedSSLWrite, (void **)&gOriginalSSLWrite},
@@ -250,6 +251,8 @@ void DHInstallNetworkHooks(void) {
             {"SSL_write_ex", (void *)DHHookedSSLWriteEx, (void **)&gOriginalSSLWriteEx},
             {"SSL_read_ex", (void *)DHHookedSSLReadEx, (void **)&gOriginalSSLReadEx},
         };
-        rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
+        int status = rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
+        for (size_t i = 0; i < sizeof(bindings) / sizeof(bindings[0]); i++)
+            DHRegisterHook([NSString stringWithUTF8String:bindings[i].name], @"fishhook", status == 0);
     });
 }

@@ -90,3 +90,17 @@ Library/Preferences/com.decrypthelper.reconstructed.plist
 ## 来源与许可证
 
 项目自写部分采用 MIT License。`Vendor/fishhook` 保留 Facebook Fishhook 的 BSD-3-Clause 风格许可证。后续接入 Capstone 时必须保留 Capstone 的 BSD-3-Clause 许可证。
+
+## Runtime control API
+
+The reconstructed engine exposes runtime controls through the local HTTP server and MCP endpoint.
+
+- `GET /api/config` returns capture, pause, spoof, and hide-rule settings.
+- `POST` or `PUT /api/config` updates and persists configuration fields.
+- `POST /api/capture` accepts `{ "category": "network|crypto|keychain|file|dynamic", "enabled": true }`.
+- `POST /api/pause` accepts `{ "paused": true }` and stops new event records without removing hooks.
+- `POST /api/spoof` updates anti-debug, jailbreak-hide, device-spoof, device values, and hide rules.
+- `GET /api/hooks` returns hook installation status recorded during bootstrap.
+
+The same controls are available as MCP tools: `get_config`, `set_config`, `set_capture`,
+`set_pause`, `set_spoof`, and `list_hooks`.

@@ -1,6 +1,7 @@
 #import "DHCommonCrypto.h"
 #import "DHConfig.h"
 #import "DHLogStore.h"
+#import "DHHookRegistry.h"
 #import "fishhook.h"
 #import <CommonCrypto/CommonCryptor.h>
 #import <CommonCrypto/CommonDigest.h>
@@ -583,6 +584,8 @@ void DHInstallCommonCryptoHooks(void) {
         gDigestCaptures = [NSMutableDictionary dictionary];
         gHmacCaptures = [NSMutableDictionary dictionary];
         gCryptorCaptures = [NSMutableDictionary dictionary];
-        rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
+        int status = rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
+        for (size_t i = 0; i < sizeof(bindings) / sizeof(bindings[0]); i++)
+            DHRegisterHook([NSString stringWithUTF8String:bindings[i].name], @"fishhook", status == 0);
     });
 }

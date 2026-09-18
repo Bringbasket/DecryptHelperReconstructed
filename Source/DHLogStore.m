@@ -1,4 +1,5 @@
 #import "DHLogStore.h"
+#import "DHConfig.h"
 #import <pthread.h>
 #import <sys/time.h>
 
@@ -108,7 +109,7 @@ NSArray<NSString *> *DHFilteredCallStack(void) {
 }
 
 - (void)append:(DHLogEntry *)entry {
-    if (!entry) return;
+    if (!entry || ![[DHConfig shared] captureEnabledForCategory:entry.category]) return;
     dispatch_async(self.queue, ^{
         entry.sequence = self.nextSequence++;
         [self.entries addObject:entry];

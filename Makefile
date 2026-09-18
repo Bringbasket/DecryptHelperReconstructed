@@ -16,6 +16,7 @@ decrypt_helper_FILES = \
 	Source/DHFileHooks.m \
 	Source/DHEVP.m \
 	Source/DHLogStore.m \
+	Source/DHHookRegistry.m \
 	Source/DHNetwork.m \
 	Source/DHSpoof.m \
 	Source/DHHTTPServer.m \

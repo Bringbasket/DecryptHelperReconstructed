@@ -1,6 +1,7 @@
 #import "DHSpoof.h"
 #import "DHConfig.h"
 #import "DHLogStore.h"
+#import "DHHookRegistry.h"
 #import "fishhook.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -61,16 +62,24 @@ static BOOL DHContainsCaseInsensitive(const char *text, const char *needle) {
 
 static BOOL DHShouldHidePath(const char *path) {
     if (!path || ![DHConfig shared].jailbreakHideEnabled) return NO;
-    for (size_t i = 0; i < sizeof(kHiddenPaths) / sizeof(kHiddenPaths[0]); i++) {
+    NSArray<NSString *> *rules = [DHConfig shared].hiddenPaths;
+    if (!rules.count) for (size_t i = 0; i < sizeof(kHiddenPaths) / sizeof(kHiddenPaths[0]); i++) {
         if (DHContainsCaseInsensitive(path, kHiddenPaths[i])) return YES;
+    }
+    for (NSString *rule in rules) {
+        if (DHContainsCaseInsensitive(path, rule.UTF8String)) return YES;
     }
     return NO;
 }
 
 static BOOL DHShouldHideImage(const char *path) {
     if (!path || ![DHConfig shared].jailbreakHideEnabled) return NO;
-    for (size_t i = 0; i < sizeof(kHiddenImages) / sizeof(kHiddenImages[0]); i++) {
+    NSArray<NSString *> *rules = [DHConfig shared].hiddenImages;
+    if (!rules.count) for (size_t i = 0; i < sizeof(kHiddenImages) / sizeof(kHiddenImages[0]); i++) {
         if (DHContainsCaseInsensitive(path, kHiddenImages[i])) return YES;
+    }
+    for (NSString *rule in rules) {
+        if (DHContainsCaseInsensitive(path, rule.UTF8String)) return YES;
     }
     return NO;
 }
@@ -298,8 +307,14 @@ static NSUUID *DHSpoofedIDFA(id self, SEL cmd) {
 static BOOL DHSpoofedCanOpenURL(id self, SEL cmd, NSURL *url) {
     if ([DHConfig shared].jailbreakHideEnabled) {
         const char *scheme = url.scheme.UTF8String;
-        for (size_t i = 0; scheme && i < sizeof(kHiddenSchemes) / sizeof(kHiddenSchemes[0]); i++) {
-            if (strcasecmp(scheme, kHiddenSchemes[i]) == 0) return NO;
+        NSArray<NSString *> *rules = [DHConfig shared].hiddenSchemes;
+        if (!rules.count) {
+            for (size_t i = 0; scheme && i < sizeof(kHiddenSchemes) / sizeof(kHiddenSchemes[0]); i++) {
+                if (strcasecmp(scheme, kHiddenSchemes[i]) == 0) return NO;
+            }
+        }
+        for (NSString *rule in rules) {
+            if (scheme && strcasecmp(scheme, rule.UTF8String) == 0) return NO;
         }
     }
     return gOriginalCanOpenURL ? gOriginalCanOpenURL(self, cmd, url) : NO;
@@ -322,23 +337,19 @@ void DHInstallSpoofHooks(void) {
             {"uname", (void *)DHHookedUname, (void **)&gOriginalUname},
             {"_dyld_get_image_name", (void *)DHHookedDyldImageName, (void **)&gOriginalDyldImageName},
         };
-        rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
+        int status = rebind_symbols(bindings, sizeof(bindings) / sizeof(bindings[0]));
+        for (size_t i = 0; i < sizeof(bindings) / sizeof(bindings[0]); i++)
+            DHRegisterHook([NSString stringWithUTF8String:bindings[i].name], @"fishhook", status == 0);
 
-        DHInstallMethod(UIDevice.class, @selector(systemVersion), (IMP)DHSpoofedSystemVersion,
-                        (IMP *)&gOriginalSystemVersion);
-        DHInstallMethod(UIDevice.class, @selector(name), (IMP)DHSpoofedDeviceName,
-                        (IMP *)&gOriginalDeviceName);
-        DHInstallMethod(UIDevice.class, @selector(identifierForVendor), (IMP)DHSpoofedIDFV,
-                        (IMP *)&gOriginalIDFV);
-        DHInstallMethod(NSProcessInfo.class, @selector(operatingSystemVersion), (IMP)DHSpoofedOSVersion,
-                        (IMP *)&gOriginalOSVersion);
-        DHInstallMethod(UIApplication.class, @selector(canOpenURL:), (IMP)DHSpoofedCanOpenURL,
-                        (IMP *)&gOriginalCanOpenURL);
+        DHRegisterHook(@"UIDevice.systemVersion", @"objc", DHInstallMethod(UIDevice.class, @selector(systemVersion), (IMP)DHSpoofedSystemVersion, (IMP *)&gOriginalSystemVersion));
+        DHRegisterHook(@"UIDevice.name", @"objc", DHInstallMethod(UIDevice.class, @selector(name), (IMP)DHSpoofedDeviceName, (IMP *)&gOriginalDeviceName));
+        DHRegisterHook(@"UIDevice.identifierForVendor", @"objc", DHInstallMethod(UIDevice.class, @selector(identifierForVendor), (IMP)DHSpoofedIDFV, (IMP *)&gOriginalIDFV));
+        DHRegisterHook(@"NSProcessInfo.operatingSystemVersion", @"objc", DHInstallMethod(NSProcessInfo.class, @selector(operatingSystemVersion), (IMP)DHSpoofedOSVersion, (IMP *)&gOriginalOSVersion));
+        DHRegisterHook(@"UIApplication.canOpenURL:", @"objc", DHInstallMethod(UIApplication.class, @selector(canOpenURL:), (IMP)DHSpoofedCanOpenURL, (IMP *)&gOriginalCanOpenURL));
 
         Class advertisingManager = NSClassFromString(@"ASIdentifierManager");
         if (advertisingManager) {
-            DHInstallMethod(advertisingManager, NSSelectorFromString(@"advertisingIdentifier"),
-                            (IMP)DHSpoofedIDFA, (IMP *)&gOriginalIDFA);
+            DHRegisterHook(@"ASIdentifierManager.advertisingIdentifier", @"objc", DHInstallMethod(advertisingManager, NSSelectorFromString(@"advertisingIdentifier"), (IMP)DHSpoofedIDFA, (IMP *)&gOriginalIDFA));
         }
     });
 }
