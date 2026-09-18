@@ -21,7 +21,7 @@
 | jailbreak hide | stat/access、scheme、dyld image 关键字 | 已重建基础版 |
 | device spoof | UIDevice/NSProcessInfo/IDFV/IDFA/uname | 已重建基础版 |
 | HTTP/MCP | 原始 socket worker、JSON-RPC `initialize/tools/*` | 已重建精简版 |
-| Dump/ZIP | `DHDumpManager`、`dh_dump_decrypt_image_to_file`、`zw_*` | 待恢复 |
+| Dump/ZIP | `DHDumpManager`、`dh_dump_decrypt_image_to_file`、`zw_*` | 已恢复串行任务管理、状态进度、Mach-O/ZIP/IPA 导出与流式下载；ZIP writer 为独立洁净室实现 |
 | 动态 thunk | 128 个 slot、import/method record-only hook | 待恢复 |
 
 详细二进制分析见同级工作区的 `decrypt_helper_reverse_notes.md`。

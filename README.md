@@ -23,12 +23,12 @@
 - `/api/events` 默认返回最近 100 条事件，可用 `?limit=1..500` 调整；单条流式输入/输出最多保留 1 MiB。
 - `/api/dump` 与 MCP `dump_image` 可导出当前进程已加载镜像；输出固定在目标 App 沙盒的
   `Library/Caches/IOSDecryptHub/Dumps`，接口只接受 `outputName`，不允许通过网络指定任意路径。
+- 串行异步 Dump Manager、任务进度/状态、流式下载，以及 Mach-O、ZIP 和 IPA 导出；
+- Capstone 5.0.9 ARM/AArch64 分析工具与内存、符号、Xref、Objective-C 运行时分析。
 
 尚未恢复：
 
 - CommonCrypto 非对称加密的完整状态机；
-- Mach-O/IPA dump 与极简 ZIP writer；
-- Capstone 5.0.9 ARM/AArch64 分析工具（通过 MCP `get_macho_info`、`list_imports`、`list_functions`、`disassemble_function` 暴露）；
 - 128-slot 动态 thunk；
 - 原版完整 Web UI 和全部 MCP tools。
 
