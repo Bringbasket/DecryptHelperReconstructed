@@ -5,12 +5,13 @@
 | 模块 | 证据 | 当前状态 |
 |---|---|---|
 | Fishhook | `rebind_symbols*`、`perform_rebinding_with_section`、`vm_protect` | 复用上游源码 |
-| Capstone | `cs_version` 返回 `0x500`，大量 ARM/AArch64 解码符号 | 待接入 5.x |
+| Capstone | `cs_version` 返回 `0x500`，大量 ARM/AArch64 解码符号 | 已接入 Capstone 5.0.9 ARM/AArch64 核心；仅编译所需架构 |
 | NSURLSession | `swz_dtReqCH`、`dh_snap_from_request`、`dh_net_enrich` | 已按行为重建 |
 | SSL | `hooked_SSL_read/write` 和 `_ex` 变体 | 已按指令顺序重建 |
 | CommonCrypto | `hooked_CC_*`、`DHCryptorState`、`DHHmacState` | 已恢复一次性与主要流式路径 |
 | OpenSSL EVP | `EVP_*Init/Update/Final`、`EVP_CIPHER_CTX_*` | 已恢复主要状态路径 |
 | Mach-O 镜像清单 | `_dyld_image_count`、`_dyld_get_image_name`、slide | 已恢复基础诊断路径 |
+| Mach-O 分析 MCP | `tool_get_macho_info`、`tool_list_imports`、`tool_list_functions`、`tool_disassemble` | 已加入当前进程内 64 位镜像分析；反汇编有长度和文本段边界限制 |
 | Mach-O Dump | `LC_ENCRYPTION_INFO(_64)`、内存解密段、`cryptid=0`、FAT 切片选择 | 已恢复当前进程镜像导出 |
 | 动态加载 | `dlopen`、`dlsym`、`dladdr` | 已恢复诊断路径 |
 | 日志查询 | `/api/events?limit=`、MCP `query_events` | 有界查询，避免大数据事件拖慢 Web 面板 |

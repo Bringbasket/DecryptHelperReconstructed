@@ -28,7 +28,7 @@
 
 - CommonCrypto 非对称加密的完整状态机；
 - Mach-O/IPA dump 与极简 ZIP writer；
-- Capstone 5.0 分析工具；
+- Capstone 5.0.9 ARM/AArch64 分析工具（通过 MCP `get_macho_info`、`list_imports`、`list_functions`、`disassemble_function` 暴露）；
 - 128-slot 动态 thunk；
 - 原版完整 Web UI 和全部 MCP tools。
 

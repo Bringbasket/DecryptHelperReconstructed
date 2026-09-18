@@ -20,10 +20,21 @@ decrypt_helper_FILES = \
 	Source/DHSpoof.m \
 	Source/DHHTTPServer.m \
 	Source/DHImageInventory.m \
+	Source/DHDisassembler.m \
 	Source/DHDump.m \
-	Vendor/fishhook/fishhook.c
+	Vendor/fishhook/fishhook.c \
+	Vendor/capstone/cs.c \
+	Vendor/capstone/Mapping.c \
+	Vendor/capstone/MCInst.c \
+	Vendor/capstone/MCInstrDesc.c \
+	Vendor/capstone/MCRegisterInfo.c \
+	Vendor/capstone/SStream.c \
+	Vendor/capstone/utils.c \
+	$(wildcard Vendor/capstone/arch/AArch64/*.c) \
+	$(wildcard Vendor/capstone/arch/ARM/*.c)
 
-decrypt_helper_CFLAGS = -IHeaders -IVendor/fishhook -Wno-deprecated-declarations
+decrypt_helper_CFLAGS = -IHeaders -IVendor/fishhook -IVendor/capstone -IVendor/capstone/include \
+	-DCAPSTONE_HAS_ARM -DCAPSTONE_HAS_ARM64 -Wno-deprecated-declarations
 decrypt_helper_OBJCFLAGS = -fobjc-arc
 decrypt_helper_FRAMEWORKS = Foundation UIKit Security
 decrypt_helper_INSTALL_PATH = /usr/lib/IOSDecryptHub

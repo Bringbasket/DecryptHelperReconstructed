@@ -1,6 +1,7 @@
 #import "DHHTTPServer.h"
 #import "DHConfig.h"
 #import "DHImageInventory.h"
+#import "DHDisassembler.h"
 #import "DHDump.h"
 #import "DHLogStore.h"
 #import <arpa/inet.h>
@@ -154,6 +155,23 @@ static NSArray *DHMCPTools(void) {
             @"image": @{ @"type": @"string" },
             @"outputName": @{ @"type": @"string" }
         }),
+        DHMCPTool(@"get_macho_info", @"Inspect load commands, segments, UUID, encryption state and symbols for a loaded 64-bit Mach-O image.", @{
+            @"image": @{ @"type": @"string" }
+        }),
+        DHMCPTool(@"list_imports", @"List undefined external symbols from a loaded Mach-O image.", @{
+            @"image": @{ @"type": @"string" },
+            @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @10000 }
+        }),
+        DHMCPTool(@"list_functions", @"List symbol-backed function candidates from a loaded Mach-O image.", @{
+            @"image": @{ @"type": @"string" },
+            @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @10000 }
+        }),
+        DHMCPTool(@"disassemble_function", @"Disassemble a bounded ARM64 function range in the current process.", @{
+            @"image": @{ @"type": @"string" },
+            @"symbol": @{ @"type": @"string" },
+            @"address": @{ @"type": @"string" },
+            @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @256 }
+        }),
         DHMCPTool(@"reload_config", @"Reload configuration from the host App sandbox.", @{}),
         DHMCPTool(@"clear_events", @"Clear retained events and the JSONL log.", @{})
     ];
@@ -220,6 +238,27 @@ static NSDictionary *DHHandleMCP(NSDictionary *request) {
             @"image": image ?: @"main",
             @"outputPath": outputPath ?: @""
         });
+    }
+    if ([name isEqualToString:@"get_macho_info"]) {
+        NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        return DHMCPToolResult(requestID, DHImageMachOInfo(image));
+    }
+    if ([name isEqualToString:@"list_imports"]) {
+        NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 1000;
+        return DHMCPToolResult(requestID, DHImageImports(image, limit));
+    }
+    if ([name isEqualToString:@"list_functions"]) {
+        NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 1000;
+        return DHMCPToolResult(requestID, DHImageFunctions(image, limit));
+    }
+    if ([name isEqualToString:@"disassemble_function"]) {
+        NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        NSString *symbol = [arguments[@"symbol"] isKindOfClass:NSString.class] ? arguments[@"symbol"] : nil;
+        NSString *address = [arguments[@"address"] isKindOfClass:NSString.class] ? arguments[@"address"] : nil;
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 32;
+        return DHMCPToolResult(requestID, DHDisassembleFunction(image, symbol ?: address, limit));
     }
     if ([name isEqualToString:@"reload_config"]) {
         [[DHConfig shared] reload];

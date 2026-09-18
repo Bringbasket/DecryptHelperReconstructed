@@ -22,6 +22,9 @@ jobs:
           set -euo pipefail
           test -s Vendor/fishhook/fishhook.c
           test -s Vendor/fishhook/LICENSE
+          test -s Vendor/capstone/LICENSE.TXT
+          test -s Vendor/capstone/include/capstone/capstone.h
+          test -s Vendor/capstone/arch/AArch64/AArch64Disassembler.c
           test -s Source/DHCommonCrypto.m
           test -s Source/DHAsymmetric.m
           test -s Source/DHDynamic.m
