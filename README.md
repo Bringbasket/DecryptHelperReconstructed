@@ -18,6 +18,8 @@
 - UIDevice、NSProcessInfo、IDFV/IDFA、`uname` 设备信息伪装；
 - 内存事件仓库和 JSONL 日志；
 - 监听 `0.0.0.0:8088...8108` 的轻量 Web UI、JSON API 和基础 MCP endpoint；
+- 目标 App 内的可拖动浮窗：事件统计、暂停/继续、清空事件、复制和打开 Web 地址；
+- 完整 Web 控制台：事件与 HexDump、Dump、镜像/内存/符号/ObjC 分析、Hook、配置和 MCP 调试；
 - `/api/stats` 返回 `process.bundleId` 与引擎版本，可被 IOSDecryptHub 管理器识别。
 - `/api/images` 与 MCP `list_images` 提供当前进程加载镜像清单。
 - `/api/events` 默认返回最近 100 条事件，可用 `?limit=1..500` 调整；单条流式输入/输出最多保留 1 MiB。
@@ -30,7 +32,7 @@
 
 - CommonCrypto 非对称加密的完整状态机；
 - 128-slot 动态 thunk；
-- 原版完整 Web UI 和全部 MCP tools。
+- 原版尚未重建的高级 MCP tools（当前控制台只展示本项目已经实现并验证的工具）。
 
 ## 构建
 
@@ -41,6 +43,15 @@ make package FINALPACKAGE=1
 ```
 
 GitHub Actions 的 `Build rootless package` 工作流会上传 `.deb` 和未打包的 `decrypt_helper.dylib`。
+独立的 `Build roothide arm64e package` 工作流使用 RootHide Theos 同时生成 arm64 + arm64e
+切片，上传 `iphoneos-arm64e` deb 和胖版 `decrypt_helper-roothide-arm64-arm64e.dylib`。
+
+本地构建 roothide 需要使用 `roothide/theos`：
+
+```sh
+make clean package FINALPACKAGE=1 ARCHS="arm64 arm64e" \
+  THEOS_PACKAGE_SCHEME=roothide TARGET_OS_DEPLOYMENT_VERSION_arm64e=14.0
+```
 
 用于现有 IOSDecryptHub 时，主要产物是 `decrypt_helper.dylib`：替换现有引擎后由原项目的
 `IOSDecryptHubLoader.dylib` 按启用名单加载。本项目生成的独立 deb 只包含重建引擎，不包含

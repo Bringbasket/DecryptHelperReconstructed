@@ -1,0 +1,105 @@
+name: Build roothide arm64e package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-roothide:
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up RootHide Theos
+        uses: Randomblock1/theos-action@4e23d15886bca77b5f7c462a82567e0de33ebe0b
+        with:
+          theos-src: https://github.com/roothide/theos
+
+      - name: Validate generated Web console
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s Source/DHFloatingUI.m
+          test -s Source/DHWebConsole.m
+          test -s Source/DHWebConsoleBase64.inc
+          python3 Tools/embed_web.py --check
+          node Tools/check_web.js
+
+      - name: Build roothide arm64 and arm64e package
+        shell: bash
+        run: |
+          set -o pipefail
+          make clean package FINALPACKAGE=1 messages=yes \
+            ARCHS="arm64 arm64e" \
+            TARGET="iphone:clang:latest:14.0" \
+            TARGET_OS_DEPLOYMENT_VERSION_arm64e=14.0 \
+            THEOS_PACKAGE_SCHEME=roothide 2>&1 | tee build-roothide.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done < <(grep -E '(^|[[:space:]])(error:|fatal error:|clang: error:|make\[[0-9]+\]: \*\*\*)' build-roothide.log || true)
+          fi
+          exit "$status"
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: decrypt-helper-roothide-build-log
+          path: build-roothide.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Verify roothide package and fat dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+          dylib=""
+          while IFS= read -r candidate; do
+            archs="$(lipo -archs "$candidate" 2>/dev/null || true)"
+            if grep -qw arm64 <<<"$archs" && grep -qw arm64e <<<"$archs"; then
+              dylib="$candidate"
+              break
+            fi
+          done < <(find .theos -type f -name 'decrypt_helper.dylib')
+          test -n "$dylib" && test -s "$dylib"
+          file "$dylib"
+          lipo -archs "$dylib" | grep -qw arm64
+          lipo -archs "$dylib" | grep -qw arm64e
+
+          deb="$(find packages -type f -name '*.deb' -print -quit)"
+          test -n "$deb" && test -s "$deb"
+          members="$(ar -t "$deb")"
+          grep -qx 'debian-binary' <<<"$members"
+          control_member="$(grep -E '^control\.tar\.(xz|lzma|gz|zst)$' <<<"$members")"
+          data_member="$(grep -E '^data\.tar\.(xz|lzma|gz|zst)$' <<<"$members")"
+          test -n "$control_member" && test -n "$data_member"
+          control_text="$(ar -p "$deb" "$control_member" | tar -xOf - ./control)"
+          grep -q '^Architecture: iphoneos-arm64e$' <<<"$control_text"
+          package_contents="$(ar -p "$deb" "$data_member" | tar -tf -)"
+          grep -Eq '(^|/)usr/lib/IOSDecryptHub/decrypt_helper\.dylib$' <<<"$package_contents"
+          if grep -qE '(^|/)var/jb/' <<<"$package_contents"; then
+            echo "roothide package unexpectedly contains a fixed /var/jb prefix" >&2
+            exit 1
+          fi
+          printf '%s\n' "$dylib" > .roothide-dylib-path
+
+      - name: Collect roothide artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts-roothide
+          find packages -type f -name '*.deb' -exec cp {} artifacts-roothide/ \;
+          cp "$(cat .roothide-dylib-path)" artifacts-roothide/decrypt_helper-roothide-arm64-arm64e.dylib
+
+      - name: Upload roothide artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: decrypt-helper-reconstructed-roothide-arm64e
+          path: artifacts-roothide/*
+          if-no-files-found: error
+          retention-days: 14

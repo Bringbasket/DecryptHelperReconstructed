@@ -4,6 +4,7 @@
 #import "DHDynamic.h"
 #import "DHFileHooks.h"
 #import "DHEVP.h"
+#import "DHFloatingUI.h"
 #import "DHHTTPServer.h"
 #import "DHKeychain.h"
 #import "DHLogStore.h"
@@ -30,5 +31,6 @@ static void DHBootstrap(void) {
         DHInstallSpoofHooks();
         DHInstallNetworkHooks();
         DHStartHTTPServer();
+        DHInstallFloatingUI();
     }
 }

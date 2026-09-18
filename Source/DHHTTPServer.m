@@ -6,6 +6,7 @@
 #import "DHLogStore.h"
 #import "DHHookRegistry.h"
 #import "DHAnalysis.h"
+#import "DHWebConsole.h"
 #import <arpa/inet.h>
 #import <netinet/in.h>
 #import <sys/socket.h>
@@ -14,7 +15,7 @@
 
 static int gListenSocket = -1;
 static uint16_t gHTTPPort;
-static NSString * const kDHEngineVersion = @"0.2.0";
+static NSString * const kDHEngineVersion = @"0.3.0";
 
 static NSDictionary *DHRuntimeSnapshot(void) {
     NSBundle *bundle = NSBundle.mainBundle;
@@ -33,29 +34,6 @@ static NSDictionary *DHRuntimeSnapshot(void) {
         @"config": [[DHConfig shared] publicSnapshot]
     };
 }
-
-static NSString * const kDHIndexHTML =
-@"<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
-"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-"<title>Decrypt Helper Reconstructed</title><style>"
-"body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;background:#0b1020;color:#e8ecf8}"
-"header{position:sticky;top:0;background:#121a31;padding:14px 18px;display:flex;gap:12px;align-items:center}"
-"h1{font-size:17px;margin:0;flex:1}button{border:0;border-radius:8px;padding:8px 12px;background:#536dfe;color:white}"
-"main{padding:14px}.card{background:#121a31;border-radius:12px;padding:12px;margin-bottom:10px}"
-".meta{font-size:12px;color:#95a1c6;word-break:break-all}.body{white-space:pre-wrap;word-break:break-all;font:12px ui-monospace,monospace;max-height:240px;overflow:auto}"
-".empty{text-align:center;color:#95a1c6;padding:50px 0}</style></head><body>"
-"<header><h1>Decrypt Helper Reconstructed <span id='count'></span></h1>"
-"<button onclick='loadEvents()'>刷新</button><button onclick='clearEvents()'>清空</button></header>"
-"<main id='list'><div class='empty'>正在读取事件…</div></main><script>"
-"const esc=v=>String(v==null?'':v);async function loadEvents(){let r=await fetch('/api/events');let a=await r.json();"
-"count.textContent='('+a.length+')';let root=document.querySelector('#list');root.textContent='';"
-"if(!a.length){root.innerHTML=\"<div class='empty'>暂无事件</div>\";return;}"
-"for(let e of a.slice().reverse()){let d=document.createElement('div');d.className='card';"
-"let t=document.createElement('div');t.textContent=`#${e.seq} ${esc(e.category)} · ${esc(e.algorithm)} · ${esc(e.operation)}`;d.append(t);"
-"let m=document.createElement('div');m.className='meta';m.textContent=new Date(e.timestampMs).toLocaleString()+'  '+esc(e.detail);d.append(m);"
-"let b=document.createElement('div');b.className='body';b.textContent=e.input||e.output||'';d.append(b);root.append(d);}}"
-"async function clearEvents(){await fetch('/api/clear',{method:'POST'});loadEvents()}loadEvents();setInterval(loadEvents,3000);"
-"</script></body></html>";
 
 static NSUInteger DHBoundedLimit(NSString *value, NSUInteger fallback, NSUInteger maximum) {
     NSInteger parsed = value.integerValue;
@@ -544,7 +522,7 @@ static void DHHandleClient(int socketFD) {
             DHSendResponse(socketFD, 204, @"text/plain", nil);
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/"]) {
             DHSendResponse(socketFD, 200, @"text/html; charset=utf-8",
-                           [kDHIndexHTML dataUsingEncoding:NSUTF8StringEncoding]);
+                           [DHWebConsoleHTML() dataUsingEncoding:NSUTF8StringEncoding]);
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/health"]) {
             NSMutableDictionary *health = [DHRuntimeSnapshot() mutableCopy];
             health[@"ok"] = @YES;
@@ -558,6 +536,22 @@ static void DHHandleClient(int socketFD) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData([[DHConfig shared] publicSnapshot]));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/hooks"]) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHHookRegistrySnapshot()));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/macho"]) {
+            DHSendResponse(socketFD, 200, @"application/json",
+                           DHJSONData(DHImageMachOInfo(DHQueryValue(target, @"image"))));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/imports"]) {
+            NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"limit"), 1000, 10000);
+            DHSendResponse(socketFD, 200, @"application/json",
+                           DHJSONData(DHImageImports(DHQueryValue(target, @"image"), limit)));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/functions"]) {
+            NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"limit"), 1000, 10000);
+            DHSendResponse(socketFD, 200, @"application/json",
+                           DHJSONData(DHImageFunctions(DHQueryValue(target, @"image"), limit)));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/disassemble"]) {
+            NSString *symbolOrAddress = DHQueryValue(target, @"symbol") ?: DHQueryValue(target, @"address");
+            NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"limit"), 32, 256);
+            DHSendResponse(socketFD, 200, @"application/json",
+                           DHJSONData(DHDisassembleFunction(DHQueryValue(target, @"image"), symbolOrAddress, limit)));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/memory"]) {
             uint64_t address = 0;
             NSUInteger length = DHBoundedLimit(DHQueryValue(target, @"length"), 0, 1024 * 1024);
@@ -715,4 +709,8 @@ void DHStartHTTPServer(void) {
             }
         });
     });
+}
+
+uint16_t DHHTTPServerPort(void) {
+    return gHTTPPort ?: [DHConfig shared].httpPort;
 }

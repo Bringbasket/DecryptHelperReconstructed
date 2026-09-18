@@ -9,6 +9,7 @@
 @property (nonatomic) BOOL antiDebugEnabled;
 @property (nonatomic) BOOL jailbreakHideEnabled;
 @property (nonatomic) BOOL deviceSpoofEnabled;
+@property (nonatomic) BOOL floatingUIEnabled;
 @property (nonatomic) BOOL paused;
 @property (nonatomic) uint16_t httpPort;
 @property (nonatomic, copy) NSDictionary<NSString *, id> *deviceValues;
@@ -38,6 +39,7 @@
     self.antiDebugEnabled = NO;
     self.jailbreakHideEnabled = NO;
     self.deviceSpoofEnabled = NO;
+    self.floatingUIEnabled = YES;
     self.paused = NO;
     self.httpPort = 8088;
     self.deviceValues = @{};
@@ -77,6 +79,8 @@
     if ([value respondsToSelector:@selector(boolValue)]) self.jailbreakHideEnabled = [value boolValue];
     value = root[@"device_spoof"];
     if ([value respondsToSelector:@selector(boolValue)]) self.deviceSpoofEnabled = [value boolValue];
+    value = root[@"floating_ui"];
+    if ([value respondsToSelector:@selector(boolValue)]) self.floatingUIEnabled = [value boolValue];
     value = root[@"paused"];
     if ([value respondsToSelector:@selector(boolValue)]) self.paused = [value boolValue];
     value = root[@"http_port"];
@@ -106,7 +110,7 @@
         @"keychain": @(self.keychainEnabled), @"file": @(self.fileEnabled),
         @"dynamic": @(self.dynamicEnabled), @"anti_debug": @(self.antiDebugEnabled),
         @"jailbreak_hide": @(self.jailbreakHideEnabled), @"device_spoof": @(self.deviceSpoofEnabled),
-        @"paused": @(self.paused), @"http_port": @(self.httpPort),
+        @"floating_ui": @(self.floatingUIEnabled), @"paused": @(self.paused), @"http_port": @(self.httpPort),
         @"device": self.deviceValues ?: @{}, @"hidden_paths": self.hiddenPaths ?: @[],
         @"hidden_images": self.hiddenImages ?: @[], @"hidden_schemes": self.hiddenSchemes ?: @[]
     } mutableCopy];
@@ -125,7 +129,7 @@
         return NO;
     }
     @synchronized (self) {
-        NSDictionary *booleanKeys = @{@"network": @"networkEnabled", @"crypto": @"cryptoEnabled", @"keychain": @"keychainEnabled", @"file": @"fileEnabled", @"dynamic": @"dynamicEnabled", @"anti_debug": @"antiDebugEnabled", @"jailbreak_hide": @"jailbreakHideEnabled", @"device_spoof": @"deviceSpoofEnabled", @"paused": @"paused"};
+        NSDictionary *booleanKeys = @{@"network": @"networkEnabled", @"crypto": @"cryptoEnabled", @"keychain": @"keychainEnabled", @"file": @"fileEnabled", @"dynamic": @"dynamicEnabled", @"anti_debug": @"antiDebugEnabled", @"jailbreak_hide": @"jailbreakHideEnabled", @"device_spoof": @"deviceSpoofEnabled", @"floating_ui": @"floatingUIEnabled", @"paused": @"paused"};
         for (NSString *key in booleanKeys) {
             id value = values[key];
             if ([value respondsToSelector:@selector(boolValue)]) [self setValue:@([value boolValue]) forKey:booleanKeys[key]];
@@ -183,6 +187,7 @@
         @"anti_debug": @(self.antiDebugEnabled),
         @"jailbreak_hide": @(self.jailbreakHideEnabled),
         @"device_spoof": @(self.deviceSpoofEnabled),
+        @"floating_ui": @(self.floatingUIEnabled),
         @"paused": @(self.paused),
         @"http_port": @(self.httpPort),
         @"device": self.deviceValues ?: @{},

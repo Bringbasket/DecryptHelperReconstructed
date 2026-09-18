@@ -29,12 +29,17 @@ jobs:
           test -s Source/DHAsymmetric.m
           test -s Source/DHDynamic.m
           test -s Source/DHEVP.m
+          test -s Source/DHFloatingUI.m
+          test -s Source/DHWebConsole.m
+          test -s Web/console.html
           test -s Source/DHImageInventory.m
           test -s Source/DHAnalysis.m
           test -s Source/DHZipWriter.m
           test -s Source/DHDump.m
           test -s Source/DHKeychain.m
           test -s Source/DHFileHooks.m
+          python3 Tools/embed_web.py --check
+          node Tools/check_web.js
 
       - name: Build package
         shell: bash

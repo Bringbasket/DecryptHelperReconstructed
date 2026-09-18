@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL antiDebugEnabled;
 @property (nonatomic, readonly) BOOL jailbreakHideEnabled;
 @property (nonatomic, readonly) BOOL deviceSpoofEnabled;
+@property (nonatomic, readonly) BOOL floatingUIEnabled;
 @property (nonatomic, readonly, getter=isPaused) BOOL paused;
 @property (nonatomic, readonly) uint16_t httpPort;
 @property (nonatomic, readonly, copy) NSArray<NSString *> *hiddenPaths;
