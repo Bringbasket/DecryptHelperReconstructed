@@ -25,7 +25,7 @@ static NSData *DHDispatchDataPreview(dispatch_data_t content) {
 static void DHLogNW(NSString *operation, nw_connection_t connection, NSData *input, NSData *output, nw_error_t error) {
     if (![DHConfig shared].networkEnabled) return;
     DHLogEntry *entry = [DHLogEntry entryWithCategory:@"NETWORK" algorithm:@"Network.framework" operation:operation];
-    entry.detail = [NSString stringWithFormat:@"connection=%p error=%@", connection, error ? (__bridge id)error : @""];
+    entry.detail = [NSString stringWithFormat:@"connection=%p error=%@", connection, error ?: @""];
     entry.input = input; entry.output = output; entry.callStack = DHFilteredCallStack();
     [[DHLogStore shared] append:entry];
 }
