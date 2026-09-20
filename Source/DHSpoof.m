@@ -137,8 +137,8 @@ static void DHRecordEnvironmentProbeImpl(NSString *name, NSString *detail) {
     gEnvironmentLogGuard--;
 }
 
-#define DHRecordEnvironmentProbe(name, detail) do { \
-    if ([DHConfig shared].environmentProbeEnabled) DHRecordEnvironmentProbeImpl((name), (detail)); \
+#define DHRecordEnvironmentProbe(name, ...) do { \
+    if ([DHConfig shared].environmentProbeEnabled) DHRecordEnvironmentProbeImpl((name), (__VA_ARGS__)); \
 } while (0)
 
 typedef int (*DHPTraceFn)(int, pid_t, caddr_t, int);
@@ -178,7 +178,8 @@ static int DHHookedSysctlByName(const char *name, void *oldValue, size_t *oldLen
     int result = gOriginalSysctlByName ? gOriginalSysctlByName(name, oldValue, oldLength, newValue, newLength) : -1;
     NSString *key = name ? [NSString stringWithUTF8String:name] : @"";
     NSDictionary *mapping = @{@"hw.machine": @"hw_machine", @"hw.model": @"hw_model", @"kern.osversion": @"os_version"};
-    BOOL matched = mapping[key].length && DHHasDeviceRule(mapping[key]);
+    NSString *mappedKey = [mapping[key] isKindOfClass:NSString.class] ? mapping[key] : nil;
+    BOOL matched = mappedKey.length > 0 && DHHasDeviceRule(mappedKey);
     DHRecordEnvironmentProbe(@"sysctlbyname", [NSString stringWithFormat:@"name=%@ result=%d matchedRule=%@", key, result, matched ? @YES : @NO]);
     return result;
 }
