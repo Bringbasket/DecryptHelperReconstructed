@@ -20,7 +20,7 @@ static int gListenSocket = -1;
 static uint16_t gHTTPPort;
 static NSUInteger gHTTPResponseOK;
 static NSUInteger gHTTPResponseFailed;
-static NSString * const kDHEngineVersion = @"0.5.0";
+static NSString * const kDHEngineVersion = @"0.5.1";
 
 static NSDictionary *DHRuntimeSnapshot(void) {
     NSBundle *bundle = NSBundle.mainBundle;

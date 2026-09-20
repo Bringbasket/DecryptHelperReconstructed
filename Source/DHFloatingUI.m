@@ -80,11 +80,18 @@ static UIWindowScene *DHForegroundWindowScene(void) API_AVAILABLE(ios(13.0)) {
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
         [center addObserver:self selector:@selector(applicationBecameActive:)
                        name:UIApplicationDidBecomeActiveNotification object:nil];
+        [center addObserver:self selector:@selector(applicationBecameActive:)
+                       name:UIApplicationWillEnterForegroundNotification object:nil];
+        [center addObserver:self selector:@selector(applicationBecameActive:)
+                       name:UIWindowDidBecomeKeyNotification object:nil];
         if (@available(iOS 13.0, *)) {
             [center addObserver:self selector:@selector(applicationBecameActive:)
                            name:UISceneDidActivateNotification object:nil];
+            [center addObserver:self selector:@selector(applicationBecameActive:)
+                           name:UISceneWillEnterForegroundNotification object:nil];
         }
         [self installIfPossible];
+        [self scheduleInstallRetries];
         self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self
                                                            selector:@selector(refreshStatus)
                                                            userInfo:nil repeats:YES];
@@ -94,6 +101,17 @@ static UIWindowScene *DHForegroundWindowScene(void) API_AVAILABLE(ios(13.0)) {
 - (void)applicationBecameActive:(NSNotification *)notification {
     (void)notification;
     [self installIfPossible];
+    [self scheduleInstallRetries];
+}
+
+- (void)scheduleInstallRetries {
+    NSArray<NSNumber *> *delays = @[@0.05, @0.20, @0.50, @1.0, @2.0];
+    for (NSNumber *delay in delays) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self installIfPossible];
+        });
+    }
 }
 
 - (void)installIfPossible {
@@ -130,6 +148,8 @@ static UIWindowScene *DHForegroundWindowScene(void) API_AVAILABLE(ios(13.0)) {
     window.rootViewController = rootController;
     self.overlayWindow = window;
     [self buildInterfaceInView:rootController.view];
+    [rootController.view setNeedsLayout];
+    [rootController.view layoutIfNeeded];
     window.hidden = ![DHConfig shared].floatingUIEnabled;
     [self refreshStatus];
 }
