@@ -30,6 +30,10 @@ jobs:
           test -s Source/DHDynamic.m
           test -s Source/DHEVP.m
           test -s Source/DHFloatingUI.m
+          test -s Source/DHNetworkExtensions.m
+          test -s Source/DHNetworkFramework.m
+          test -s Source/DHWebSocket.m
+          test -s Source/DHWebKitProbe.m
           test -s Source/DHWebConsole.m
           test -s Web/console.html
           test -s Source/DHImageInventory.m

@@ -29,4 +29,17 @@ FOUNDATION_EXPORT NSArray<NSDictionary<NSString *, id> *> *DHObjCClassList(NSStr
 FOUNDATION_EXPORT NSDictionary<NSString *, id> *DHObjCClassInfo(NSString *className,
                                                                 NSUInteger methodLimit);
 
+/// Resolve an Objective-C selector to its current IMP and declaring class.
+/// `methodType` accepts `instance`, `class`, or `auto` (default).
+FOUNDATION_EXPORT NSDictionary<NSString *, id> *DHObjCResolveIMP(NSString *className,
+                                                                 NSString *selectorName,
+                                                                 NSString * _Nullable methodType);
+
+/// Find Objective-C methods across registered classes. Empty filters match all methods.
+FOUNDATION_EXPORT NSArray<NSDictionary<NSString *, id> *> *DHFindObjCMethods(NSString * _Nullable classQuery,
+                                                                              NSString * _Nullable selectorQuery,
+                                                                              NSString * _Nullable imageQuery,
+                                                                              NSString * _Nullable impImageQuery,
+                                                                              NSUInteger limit);
+
 NS_ASSUME_NONNULL_END

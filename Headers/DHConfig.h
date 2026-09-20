@@ -12,7 +12,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL antiDebugEnabled;
 @property (nonatomic, readonly) BOOL jailbreakHideEnabled;
 @property (nonatomic, readonly) BOOL deviceSpoofEnabled;
+@property (nonatomic, readonly) BOOL environmentProbeEnabled;
 @property (nonatomic, readonly) BOOL floatingUIEnabled;
+@property (nonatomic, readonly) BOOL webkitProbeEnabled;
+@property (nonatomic, readonly) BOOL webkitProbeRedact;
+@property (nonatomic, readonly) NSUInteger webkitProbeMaxBytes;
+@property (nonatomic, readonly, copy) NSArray<NSString *> *webkitProbeAllowDomains;
+@property (nonatomic, readonly, copy) NSArray<NSString *> *webkitProbeDenyDomains;
 @property (nonatomic, readonly, getter=isPaused) BOOL paused;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, NSNumber *> *pausedByCategory;
 @property (nonatomic, readonly, copy) NSArray<NSDictionary<NSString *, id> *> *noiseRules;
@@ -31,8 +37,14 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)noiseActionForEvent:(NSDictionary<NSString *, id> *)event
                            matchedRuleName:(NSString * _Nullable * _Nullable)ruleName;
 - (nullable NSString *)spoofValueForKey:(NSString *)key;
+- (BOOL)updateSpoofRuleOperation:(NSString *)operation
+                            kind:(NSString *)kind
+                           value:(NSString *)value
+                           error:(NSError * _Nullable * _Nullable)error;
 - (NSDictionary<NSString *, id> *)publicSnapshot;
 
 @end
 
 NS_ASSUME_NONNULL_END
+
+FOUNDATION_EXPORT NSUInteger DHPersistFailureCount(void);

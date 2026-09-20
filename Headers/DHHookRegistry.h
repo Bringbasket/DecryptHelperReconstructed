@@ -5,7 +5,22 @@ NS_ASSUME_NONNULL_BEGIN
 struct rebinding;
 
 FOUNDATION_EXPORT void DHRegisterHook(NSString *name, NSString *type, BOOL installed);
+/// Records installation status with an optional error and implementation status code.
+/// The legacy DHRegisterHook entry point remains source-compatible and records a
+/// generic failure reason when installed is NO.
+FOUNDATION_EXPORT void DHRegisterHookDiagnostic(NSString *name,
+                                                NSString *type,
+                                                BOOL installed,
+                                                NSString * _Nullable errorMessage);
+/// Variant used by installers that have a native return/status code.
+FOUNDATION_EXPORT void DHRegisterHookDiagnosticWithStatus(NSString *name,
+                                                          NSString *type,
+                                                          BOOL installed,
+                                                          NSString * _Nullable errorMessage,
+                                                          NSInteger statusCode);
 FOUNDATION_EXPORT NSArray<NSDictionary<NSString *, id> *> *DHHookRegistrySnapshot(void);
+/// Returns a compact health report suitable for diagnostics endpoints.
+FOUNDATION_EXPORT NSDictionary<NSString *, id> *DHHookRegistryDiagnosticSnapshot(void);
 
 /// Installs Fishhook bindings and also records their wrapper/original slots so
 /// calls resolved later through dlsym can be routed through the same wrappers.

@@ -2,10 +2,14 @@
 #import "DHConfig.h"
 #import <pthread.h>
 #import <sys/time.h>
+#include <stdlib.h>
 
 static const NSUInteger kDHRetainedEventLimit = 2000;
 static const unsigned long long kDHLogRotationBytes = 8ULL * 1024ULL * 1024ULL;
 static const NSUInteger kDHLogRotationSegments = 3;
+static const NSUInteger kDHJournalBatchBytes = 64 * 1024;
+static const NSUInteger kDHSoftPendingLimit = 1024;
+static const NSUInteger kDHHardPendingLimit = 4096;
 
 static NSString *DHDataText(NSData *data) {
     if (!data.length) return @"";
@@ -96,6 +100,12 @@ NSArray<NSString *> *DHFilteredCallStack(void) {
 @property (nonatomic, strong) NSMutableArray<DHLogEntry *> *entries;
 @property (nonatomic, strong) NSMutableArray<DHLogEntry *> *noiseEntries;
 @property (nonatomic) uint64_t nextSequence;
+@property (nonatomic, strong) NSMutableData *journalBuffer;
+@property (nonatomic) BOOL journalFlushScheduled;
+@property (nonatomic) NSUInteger pendingEvents;
+@property (nonatomic) NSUInteger restoredEvents;
+@property (nonatomic) NSUInteger droppedEvents;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *droppedByCategory;
 @end
 
 @implementation DHLogStore
@@ -114,18 +124,32 @@ NSArray<NSString *> *DHFilteredCallStack(void) {
     _entries = [NSMutableArray array];
     _noiseEntries = [NSMutableArray array];
     _nextSequence = 1;
+    _journalBuffer = [NSMutableData data];
+    _droppedByCategory = [NSMutableDictionary dictionary];
     NSString *directory = [[self logFilePath] stringByDeletingLastPathComponent];
     [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
+    [self restoreFromJournal];
     return self;
 }
 
+- (NSString *)logDirectory {
+    const char *override = getenv("DH_LOG_DIR");
+    if (override && override[0] == '/') {
+        NSString *value = [NSString stringWithUTF8String:override];
+        if (value.length) return [value stringByStandardizingPath];
+    }
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/IOSDecryptHub"];
+}
+
 - (NSString *)logFilePath {
-    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/IOSDecryptHub/decrypt_helper.log"];
+    return [[self logDirectory] stringByAppendingPathComponent:@"decrypt_helper.log"];
 }
 
 - (NSString *)noiseLogFilePath {
-    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/IOSDecryptHub/decrypt_helper.noise.log"];
+    return [[self logDirectory] stringByAppendingPathComponent:@"decrypt_helper.noise.log"];
 }
+
+- (NSString *)journalFilePath { return self.logFilePath; }
 
 - (void)rotateLogAtPathIfNeeded:(NSString *)path incomingLength:(NSUInteger)incomingLength {
     NSFileManager *manager = NSFileManager.defaultManager;
@@ -142,33 +166,112 @@ NSArray<NSString *> *DHFilteredCallStack(void) {
     if ([manager fileExistsAtPath:path]) [manager moveItemAtPath:path toPath:[path stringByAppendingString:@".1"] error:nil];
 }
 
+- (void)writeLineData:(NSData *)line toPath:(NSString *)path {
+    if (!line.length) return;
+    [self rotateLogAtPathIfNeeded:path incomingLength:line.length];
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!handle) { [line writeToFile:path atomically:YES]; return; }
+    @try { [handle seekToEndOfFile]; [handle writeData:line]; [handle closeFile]; }
+    @catch (__unused NSException *exception) { [handle closeFile]; }
+}
+
+- (void)flushJournalBufferLocked {
+    if (!self.journalBuffer.length) { self.journalFlushScheduled = NO; return; }
+    NSData *batch = [self.journalBuffer copy];
+    [self.journalBuffer setLength:0];
+    self.journalFlushScheduled = NO;
+    [self writeLineData:batch toPath:self.logFilePath];
+}
+
 - (void)appendDictionary:(NSDictionary *)dictionary toPath:(NSString *)path {
     NSData *json = [NSJSONSerialization dataWithJSONObject:dictionary options:0 error:nil];
     if (!json) return;
     NSMutableData *line = [json mutableCopy];
     [line appendBytes:"\n" length:1];
-    [self rotateLogAtPathIfNeeded:path incomingLength:line.length];
-    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
-    if (!handle) {
-        [line writeToFile:path atomically:YES];
-        return;
+    if (![path isEqualToString:self.logFilePath]) { [self writeLineData:line toPath:path]; return; }
+    [self.journalBuffer appendData:line];
+    if (self.journalBuffer.length >= kDHJournalBatchBytes) { [self flushJournalBufferLocked]; return; }
+    if (self.journalFlushScheduled) return;
+    self.journalFlushScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), self.queue, ^{ [self flushJournalBufferLocked]; });
+}
+
+- (DHLogEntry *)entryFromDictionary:(NSDictionary *)dictionary {
+    if (![dictionary isKindOfClass:NSDictionary.class]) return nil;
+    DHLogEntry *entry = [DHLogEntry entryWithCategory:DHStringValue(dictionary[@"category"])
+                                            algorithm:DHStringValue(dictionary[@"algorithm"])
+                                            operation:DHStringValue(dictionary[@"operation"])];
+    entry.sequence = [dictionary[@"seq"] unsignedLongLongValue];
+    entry.timestampMs = [dictionary[@"timestampMs"] unsignedLongLongValue];
+    entry.threadId = [dictionary[@"threadId"] unsignedLongLongValue];
+    entry.contextId = DHStringValue(dictionary[@"contextId"]);
+    entry.detail = [dictionary[@"detail"] isKindOfClass:NSString.class] ? dictionary[@"detail"] : nil;
+    entry.callStack = [dictionary[@"callStack"] isKindOfClass:NSArray.class] ? dictionary[@"callStack"] : @[];
+    entry.noise = [dictionary[@"noise"] boolValue];
+    entry.noiseRule = [dictionary[@"noiseRule"] isKindOfClass:NSString.class] ? dictionary[@"noiseRule"] : nil;
+    NSString *input = [dictionary[@"inputBase64"] isKindOfClass:NSString.class] ? dictionary[@"inputBase64"] : nil;
+    NSString *output = [dictionary[@"outputBase64"] isKindOfClass:NSString.class] ? dictionary[@"outputBase64"] : nil;
+    if (input.length) entry.input = [[NSData alloc] initWithBase64EncodedString:input options:0];
+    if (output.length) entry.output = [[NSData alloc] initWithBase64EncodedString:output options:0];
+    return entry;
+}
+
+- (void)restorePath:(NSString *)path into:(NSMutableArray<DHLogEntry *> *)destination {
+    NSData *data = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil];
+    if (!data.length) return;
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    for (NSString *line in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        if (!line.length) continue;
+        NSData *json = [line dataUsingEncoding:NSUTF8StringEncoding];
+        NSDictionary *dictionary = json ? [NSJSONSerialization JSONObjectWithData:json options:0 error:nil] : nil;
+        DHLogEntry *entry = [self entryFromDictionary:dictionary];
+        if (!entry) continue;
+        [destination addObject:entry];
+        self.nextSequence = MAX(self.nextSequence, entry.sequence + 1);
     }
-    @try {
-        [handle seekToEndOfFile];
-        [handle writeData:line];
-        [handle closeFile];
-    } @catch (__unused NSException *exception) {
-        [handle closeFile];
+}
+
+- (void)restoreFromJournal {
+    NSMutableArray<DHLogEntry *> *restored = [NSMutableArray array];
+    for (NSInteger index = (NSInteger)kDHLogRotationSegments; index >= 1; index--) {
+        [self restorePath:[self.logFilePath stringByAppendingFormat:@".%ld", (long)index] into:restored];
     }
+    [self restorePath:self.logFilePath into:restored];
+    NSMutableArray<DHLogEntry *> *restoredNoise = [NSMutableArray array];
+    for (NSInteger index = (NSInteger)kDHLogRotationSegments; index >= 1; index--) {
+        [self restorePath:[self.noiseLogFilePath stringByAppendingFormat:@".%ld", (long)index] into:restoredNoise];
+    }
+    [self restorePath:self.noiseLogFilePath into:restoredNoise];
+    if (restored.count > kDHRetainedEventLimit) [restored removeObjectsInRange:NSMakeRange(0, restored.count - kDHRetainedEventLimit)];
+    for (DHLogEntry *entry in restored) {
+        if (entry.noise) [self.noiseEntries addObject:entry];
+        else [self.entries addObject:entry];
+    }
+    [self.noiseEntries addObjectsFromArray:restoredNoise];
+    if (self.entries.count > kDHRetainedEventLimit) [self.entries removeObjectsInRange:NSMakeRange(0, self.entries.count - kDHRetainedEventLimit)];
+    if (self.noiseEntries.count > kDHRetainedEventLimit) [self.noiseEntries removeObjectsInRange:NSMakeRange(0, self.noiseEntries.count - kDHRetainedEventLimit)];
+    self.restoredEvents = restored.count + restoredNoise.count;
 }
 
 - (void)append:(DHLogEntry *)entry {
     if (!entry || ![[DHConfig shared] captureEnabledForCategory:entry.category]) return;
+    @synchronized (self) {
+        BOOL softDrop = self.pendingEvents >= kDHSoftPendingLimit &&
+            ([entry.category isEqualToString:@"NETWORK"] || [entry.category hasPrefix:@"FILE_"] || [entry.category isEqualToString:@"WEBKIT"]);
+        if (self.pendingEvents >= kDHHardPendingLimit || softDrop) {
+            self.droppedEvents++;
+            NSString *category = entry.category ?: @"OTHER";
+            self.droppedByCategory[category] = @([self.droppedByCategory[category] unsignedIntegerValue] + 1);
+            return;
+        }
+        self.pendingEvents++;
+    }
     dispatch_async(self.queue, ^{
+        @autoreleasepool {
         NSDictionary *candidate = entry.dictionaryRepresentation;
         NSString *ruleName = nil;
         NSString *action = [[DHConfig shared] noiseActionForEvent:candidate matchedRuleName:&ruleName];
-        if ([action isEqualToString:@"drop"]) return;
+        if ([action isEqualToString:@"drop"]) { @synchronized (self) { self.pendingEvents--; } return; }
 
         entry.sequence = self.nextSequence++;
         NSMutableArray<DHLogEntry *> *destination = self.entries;
@@ -184,7 +287,28 @@ NSArray<NSString *> *DHFilteredCallStack(void) {
             [destination removeObjectsInRange:NSMakeRange(0, destination.count - kDHRetainedEventLimit)];
         }
         [self appendDictionary:entry.dictionaryRepresentation toPath:path];
+        @synchronized (self) { self.pendingEvents--; }
+        }
     });
+}
+
+- (NSDictionary<NSString *,id> *)pipelineStats {
+    __block NSUInteger journalBufferBytes = 0;
+    dispatch_sync(self.queue, ^{ journalBufferBytes = self.journalBuffer.length; });
+    unsigned long long diskBytes = 0;
+    NSFileManager *manager = NSFileManager.defaultManager;
+    for (NSUInteger index = 0; index <= kDHLogRotationSegments; index++) {
+        NSString *path = index ? [self.logFilePath stringByAppendingFormat:@".%lu", (unsigned long)index] : self.logFilePath;
+        diskBytes += [[manager attributesOfItemAtPath:path error:nil][NSFileSize] unsignedLongLongValue];
+    }
+    @synchronized (self) {
+        return @{
+            @"pending": @(self.pendingEvents), @"softLimit": @(kDHSoftPendingLimit), @"hardLimit": @(kDHHardPendingLimit),
+            @"journalBytes": @(diskBytes + journalBufferBytes), @"journalMaxBytes": @(kDHLogRotationBytes * (kDHLogRotationSegments + 1)),
+            @"restoredEvents": @(self.restoredEvents), @"dropped": @(self.droppedEvents),
+            @"droppedByCategory": [self.droppedByCategory copy] ?: @{}
+        };
+    }
 }
 
 - (NSArray<DHLogEntry *> *)snapshot {
@@ -289,6 +413,8 @@ NSArray<NSString *> *DHFilteredCallStack(void) {
 - (void)clearAll {
     dispatch_sync(self.queue, ^{
         [self.entries removeAllObjects];
+        [self.journalBuffer setLength:0];
+        self.journalFlushScheduled = NO;
         [self clearFilesAtBasePath:self.logFilePath];
     });
 }

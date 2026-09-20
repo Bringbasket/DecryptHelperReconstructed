@@ -52,6 +52,48 @@ static DHSecKeyVerifySignatureFn gOriginalSecKeyVerifySignature;
 static DHSecKeyCreateCryptedDataFn gOriginalSecKeyCreateEncryptedData;
 static DHSecKeyCreateCryptedDataFn gOriginalSecKeyCreateDecryptedData;
 
+typedef OSStatus (*DHSecKeyLegacyFn)(SecKeyRef, SecPadding, const uint8_t *, size_t, uint8_t *, size_t *);
+typedef OSStatus (*DHSecKeyLegacyVerifyFn)(SecKeyRef, SecPadding, const uint8_t *, size_t, const uint8_t *, size_t);
+static DHSecKeyLegacyFn gOriginalSecKeyEncrypt;
+static DHSecKeyLegacyFn gOriginalSecKeyDecrypt;
+static DHSecKeyLegacyFn gOriginalSecKeyRawSign;
+static DHSecKeyLegacyVerifyFn gOriginalSecKeyRawVerify;
+
+static void DHLogLegacyKey(NSString *operation, const uint8_t *input, size_t inputLength,
+                           const uint8_t *output, size_t outputLength, OSStatus status) {
+    NSData *inputData = input && inputLength ? [NSData dataWithBytes:input length:MIN(inputLength, 1024 * 1024)] : nil;
+    NSData *outputData = output && outputLength ? [NSData dataWithBytes:output length:MIN(outputLength, 1024 * 1024)] : nil;
+    DHLogAsymmetric(operation, nil, (__bridge CFDataRef)inputData, (__bridge CFDataRef)outputData, status == errSecSuccess, NULL);
+}
+
+static OSStatus DHHookedSecKeyEncrypt(SecKeyRef key, SecPadding padding, const uint8_t *plainText,
+                                      size_t plainTextLen, uint8_t *cipherText, size_t *cipherTextLen) {
+    OSStatus status = gOriginalSecKeyEncrypt ? gOriginalSecKeyEncrypt(key, padding, plainText, plainTextLen, cipherText, cipherTextLen) : errSecUnimplemented;
+    DHLogLegacyKey(@"encrypt_legacy", plainText, plainTextLen, cipherText, cipherTextLen ? *cipherTextLen : 0, status);
+    return status;
+}
+
+static OSStatus DHHookedSecKeyDecrypt(SecKeyRef key, SecPadding padding, const uint8_t *cipherText,
+                                      size_t cipherTextLen, uint8_t *plainText, size_t *plainTextLen) {
+    OSStatus status = gOriginalSecKeyDecrypt ? gOriginalSecKeyDecrypt(key, padding, cipherText, cipherTextLen, plainText, plainTextLen) : errSecUnimplemented;
+    DHLogLegacyKey(@"decrypt_legacy", cipherText, cipherTextLen, plainText, plainTextLen ? *plainTextLen : 0, status);
+    return status;
+}
+
+static OSStatus DHHookedSecKeyRawSign(SecKeyRef key, SecPadding padding, const uint8_t *dataToSign,
+                                      size_t dataToSignLen, uint8_t *sig, size_t *sigLen) {
+    OSStatus status = gOriginalSecKeyRawSign ? gOriginalSecKeyRawSign(key, padding, dataToSign, dataToSignLen, sig, sigLen) : errSecUnimplemented;
+    DHLogLegacyKey(@"raw_sign", dataToSign, dataToSignLen, sig, sigLen ? *sigLen : 0, status);
+    return status;
+}
+
+static OSStatus DHHookedSecKeyRawVerify(SecKeyRef key, SecPadding padding, const uint8_t *signedData,
+                                        size_t signedDataLen, const uint8_t *sig, size_t sigLen) {
+    OSStatus status = gOriginalSecKeyRawVerify ? gOriginalSecKeyRawVerify(key, padding, signedData, signedDataLen, sig, sigLen) : errSecUnimplemented;
+    DHLogLegacyKey(@"raw_verify", signedData, signedDataLen, sig, sigLen, status);
+    return status;
+}
+
 static CFDataRef DHHookedSecKeyCreateSignature(SecKeyRef key,
                                                SecKeyAlgorithm algorithm,
                                                CFDataRef data,
@@ -104,7 +146,11 @@ void DHInstallAsymmetricHooks(void) {
             {"SecKeyCreateEncryptedData", (void *)DHHookedSecKeyCreateEncryptedData,
              (void **)&gOriginalSecKeyCreateEncryptedData},
             {"SecKeyCreateDecryptedData", (void *)DHHookedSecKeyCreateDecryptedData,
-             (void **)&gOriginalSecKeyCreateDecryptedData}
+             (void **)&gOriginalSecKeyCreateDecryptedData},
+            {"SecKeyEncrypt", (void *)DHHookedSecKeyEncrypt, (void **)&gOriginalSecKeyEncrypt},
+            {"SecKeyDecrypt", (void *)DHHookedSecKeyDecrypt, (void **)&gOriginalSecKeyDecrypt},
+            {"SecKeyRawSign", (void *)DHHookedSecKeyRawSign, (void **)&gOriginalSecKeyRawSign},
+            {"SecKeyRawVerify", (void *)DHHookedSecKeyRawVerify, (void **)&gOriginalSecKeyRawVerify}
         };
         DHRebindSymbols(bindings, sizeof(bindings) / sizeof(bindings[0]), @"fishhook");
     });

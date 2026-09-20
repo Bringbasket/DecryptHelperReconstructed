@@ -12,11 +12,14 @@
 - Keychain `SecItemCopyMatching/Add/Update/Delete` 采集；
 - 可选的 POSIX 文件 open/read/write/pread/mmap/unlink/rename 采集；
 - NSURLSession 请求/响应采集；
+- BSD socket、SecureTransport、NSURLSessionWebSocketTask 和 Network.framework 可用性/明文路径观测；
+- 可选 WKWebView 文档开始探针：fetch、XHR、WebSocket、sendBeacon、EventSource、Storage 和 WebCrypto 元数据；
 - OpenSSL/BoringSSL `SSL_read`、`SSL_write`、`SSL_read_ex`、`SSL_write_ex` 明文采集；
 - `ptrace`、`csops`、`sysctl` 反调试信息隐藏；
 - `stat`/`access`、URL Scheme、dyld 镜像等基础越狱痕迹隐藏；
 - UIDevice、NSProcessInfo、IDFV/IDFA、`uname` 设备信息伪装；
 - 内存事件仓库和 JSONL 日志；
+- JSONL journal 重启恢复、批量落盘、轮转、事件背压和按分类丢弃统计；
 - 监听 `0.0.0.0:8088...8108` 的轻量 Web UI、JSON API 和基础 MCP endpoint；
 - 目标 App 内的可拖动浮窗：事件统计、暂停/继续、清空事件、复制和打开 Web 地址；
 - 完整 Web 控制台：事件与 HexDump、Dump、镜像/内存/符号/ObjC 分析、Hook、配置和 MCP 调试；
@@ -27,6 +30,8 @@
   `Library/Caches/IOSDecryptHub/Dumps`，接口只接受 `outputName`，不允许通过网络指定任意路径。
 - 串行异步 Dump Manager、任务进度/状态、流式下载，以及 Mach-O、ZIP 和 IPA 导出；
 - Capstone 5.0.9 ARM/AArch64 分析工具与内存、符号、Xref、Objective-C 运行时分析。
+- Security 旧式 `SecKeyEncrypt`、`SecKeyDecrypt`、`SecKeyRawSign`、`SecKeyRawVerify` 采集；
+- MCP `get_capture_coverage`、`get_webkit_probe`、`set_webkit_probe` 和 `get_capabilities`。
 
 尚未恢复：
 
@@ -81,6 +86,11 @@ Library/Preferences/com.decrypthelper.reconstructed.plist
   <key>anti_debug</key><true/>
   <key>jailbreak_hide</key><true/>
   <key>device_spoof</key><false/>
+  <key>webkit_probe</key><false/>
+  <key>webkit_probe_redact</key><true/>
+  <key>webkit_probe_max_bytes</key><integer>65536</integer>
+  <key>webkit_probe_allow_domains</key><array></array>
+  <key>webkit_probe_deny_domains</key><array></array>
   <key>http_port</key><integer>8088</integer>
   <key>device</key>
   <dict>
@@ -97,6 +107,7 @@ Library/Preferences/com.decrypthelper.reconstructed.plist
 
 反调试、越狱隐藏、设备伪装、高频文件采集和动态加载诊断默认关闭；加密、Keychain、网络采集与 HTTP 默认开启。
 每个流式输入/输出最多保留 1 MiB，避免无限占用内存。仅对你有权测试的 App 使用。
+WebKit 探针默认关闭；启用后只影响新建的 WKWebView，域名过滤和敏感头脱敏在宿主进程内完成。
 
 ## 来源与许可证
 
@@ -112,9 +123,13 @@ The reconstructed engine exposes runtime controls through the local HTTP server 
 - `POST /api/pause` accepts `{ "paused": true }` and stops new event records without removing hooks.
 - `POST /api/spoof` updates anti-debug, jailbreak-hide, device-spoof, device values, and hide rules.
 - `GET /api/hooks` returns hook installation status recorded during bootstrap.
+- `GET /api/capture/coverage` reports capture layers and blind spots.
+- `GET /api/webkit/probe` and `POST /api/webkit/probe` query/update the optional WebKit probe.
 
 The same controls are available as MCP tools: `get_config`, `set_config`, `set_capture`,
 `set_pause`, `set_spoof`, and `list_hooks`.
+Capture diagnostics are available through `get_capture_coverage`, `get_webkit_probe`,
+`set_webkit_probe`, and `get_capabilities`.
 
 ## In-process analysis API
 

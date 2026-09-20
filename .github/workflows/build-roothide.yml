@@ -23,6 +23,10 @@ jobs:
         run: |
           set -euo pipefail
           test -s Source/DHFloatingUI.m
+          test -s Source/DHNetworkExtensions.m
+          test -s Source/DHNetworkFramework.m
+          test -s Source/DHWebSocket.m
+          test -s Source/DHWebKitProbe.m
           test -s Source/DHWebConsole.m
           test -s Source/DHWebConsoleBase64.inc
           python3 Tools/embed_web.py --check

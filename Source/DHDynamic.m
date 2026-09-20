@@ -2,6 +2,7 @@
 #import "DHConfig.h"
 #import "DHLogStore.h"
 #import "DHHookRegistry.h"
+#import "DHSpoof.h"
 #import "fishhook.h"
 #import <dlfcn.h>
 
@@ -69,10 +70,12 @@ static void *DHHookedDlsym(void *handle, const char *symbol) {
 
 static int DHHookedDladdr(const void *address, Dl_info *info) {
     int result = gOriginalDladdr ? gOriginalDladdr(address, info) : 0;
+    const char *imagePath = info && info->dli_fname ? info->dli_fname : NULL;
     DHLogDynamic(@"dladdr", @{
         @"address": [NSString stringWithFormat:@"%p", address],
-        @"image": info && info->dli_fname ? DHPathString(info->dli_fname) : @"",
+        @"image": imagePath ? DHPathString(imagePath) : @"",
         @"symbol": info && info->dli_sname ? DHPathString(info->dli_sname) : @"",
+        @"matchedRule": @(DHSpoofMatchesImagePath(imagePath)),
         @"success": @(result != 0)
     });
     return result;

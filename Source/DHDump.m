@@ -511,9 +511,9 @@ static NSArray<NSString *> *DHDumpBundleSubpaths(NSString *bundlePath) {
                                             outputName:(NSString *)outputName
                                                  error:(NSError **)error {
     NSString *normalizedFormat = format.lowercaseString ?: @"macho";
-    if ([normalizedFormat isEqualToString:@"bin"]) normalizedFormat = @"macho";
+    if ([normalizedFormat isEqualToString:@"bin"]) normalizedFormat = @"zip";
     if (![@[@"macho", @"zip", @"ipa"] containsObject:normalizedFormat]) {
-        if (error) *error = DHDumpError(30, @"format must be macho, zip, or ipa");
+        if (error) *error = DHDumpError(30, @"format must be macho, bin, zip, or ipa");
         return nil;
     }
     DHDumpTask *task = [DHDumpTask new];

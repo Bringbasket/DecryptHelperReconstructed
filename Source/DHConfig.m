@@ -21,7 +21,13 @@ static BOOL DHRuleTextContains(id needle, id haystack) {
 @property (nonatomic) BOOL antiDebugEnabled;
 @property (nonatomic) BOOL jailbreakHideEnabled;
 @property (nonatomic) BOOL deviceSpoofEnabled;
+@property (nonatomic) BOOL environmentProbeEnabled;
 @property (nonatomic) BOOL floatingUIEnabled;
+@property (nonatomic) BOOL webkitProbeEnabled;
+@property (nonatomic) BOOL webkitProbeRedact;
+@property (nonatomic) NSUInteger webkitProbeMaxBytes;
+@property (nonatomic, copy) NSArray<NSString *> *webkitProbeAllowDomains;
+@property (nonatomic, copy) NSArray<NSString *> *webkitProbeDenyDomains;
 @property (nonatomic) BOOL paused;
 @property (nonatomic, copy) NSDictionary<NSString *, NSNumber *> *pausedByCategory;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *noiseRules;
@@ -31,6 +37,12 @@ static BOOL DHRuleTextContains(id needle, id haystack) {
 @property (nonatomic, copy) NSArray<NSString *> *hiddenImages;
 @property (nonatomic, copy) NSArray<NSString *> *hiddenSchemes;
 @end
+
+static NSUInteger gDHPersistFailureCount;
+
+NSUInteger DHPersistFailureCount(void) {
+    @synchronized ([DHConfig class]) { return gDHPersistFailureCount; }
+}
 
 @implementation DHConfig
 
@@ -53,7 +65,13 @@ static BOOL DHRuleTextContains(id needle, id haystack) {
     self.antiDebugEnabled = NO;
     self.jailbreakHideEnabled = NO;
     self.deviceSpoofEnabled = NO;
+    self.environmentProbeEnabled = NO;
     self.floatingUIEnabled = YES;
+    self.webkitProbeEnabled = NO;
+    self.webkitProbeRedact = YES;
+    self.webkitProbeMaxBytes = 64 * 1024;
+    self.webkitProbeAllowDomains = @[];
+    self.webkitProbeDenyDomains = @[];
     self.paused = NO;
     self.pausedByCategory = @{};
     self.noiseRules = @[];
@@ -95,8 +113,23 @@ static BOOL DHRuleTextContains(id needle, id haystack) {
     if ([value respondsToSelector:@selector(boolValue)]) self.jailbreakHideEnabled = [value boolValue];
     value = root[@"device_spoof"];
     if ([value respondsToSelector:@selector(boolValue)]) self.deviceSpoofEnabled = [value boolValue];
+    value = root[@"environment_probe"] ?: root[@"environment"];
+    if ([value respondsToSelector:@selector(boolValue)]) self.environmentProbeEnabled = [value boolValue];
     value = root[@"floating_ui"];
     if ([value respondsToSelector:@selector(boolValue)]) self.floatingUIEnabled = [value boolValue];
+    value = root[@"webkit_probe"];
+    if ([value respondsToSelector:@selector(boolValue)]) self.webkitProbeEnabled = [value boolValue];
+    value = root[@"webkit_probe_redact"];
+    if ([value respondsToSelector:@selector(boolValue)]) self.webkitProbeRedact = [value boolValue];
+    value = root[@"webkit_probe_max_bytes"];
+    if ([value respondsToSelector:@selector(unsignedIntegerValue)]) {
+        NSUInteger maxBytes = [value unsignedIntegerValue];
+        if (maxBytes >= 1024 && maxBytes <= 1024 * 1024) self.webkitProbeMaxBytes = maxBytes;
+    }
+    NSArray *webkitAllow = root[@"webkit_probe_allow_domains"];
+    NSArray *webkitDeny = root[@"webkit_probe_deny_domains"];
+    if ([webkitAllow isKindOfClass:NSArray.class]) self.webkitProbeAllowDomains = [self normalizedStringArray:webkitAllow fallback:self.webkitProbeAllowDomains];
+    if ([webkitDeny isKindOfClass:NSArray.class]) self.webkitProbeDenyDomains = [self normalizedStringArray:webkitDeny fallback:self.webkitProbeDenyDomains];
     value = root[@"paused"];
     if ([value respondsToSelector:@selector(boolValue)]) self.paused = [value boolValue];
     NSDictionary *pausedCategories = root[@"paused_by_category"];
@@ -158,7 +191,12 @@ static BOOL DHRuleTextContains(id needle, id haystack) {
         @"keychain": @(self.keychainEnabled), @"file": @(self.fileEnabled),
         @"dynamic": @(self.dynamicEnabled), @"anti_debug": @(self.antiDebugEnabled),
         @"jailbreak_hide": @(self.jailbreakHideEnabled), @"device_spoof": @(self.deviceSpoofEnabled),
+        @"environment_probe": @(self.environmentProbeEnabled),
         @"floating_ui": @(self.floatingUIEnabled), @"paused": @(self.paused), @"http_port": @(self.httpPort),
+        @"webkit_probe": @(self.webkitProbeEnabled), @"webkit_probe_redact": @(self.webkitProbeRedact),
+        @"webkit_probe_max_bytes": @(self.webkitProbeMaxBytes),
+        @"webkit_probe_allow_domains": self.webkitProbeAllowDomains ?: @[],
+        @"webkit_probe_deny_domains": self.webkitProbeDenyDomains ?: @[],
         @"paused_by_category": self.pausedByCategory ?: @{}, @"noise_rules": self.noiseRules ?: @[],
         @"device": self.deviceValues ?: @{}, @"hidden_paths": self.hiddenPaths ?: @[],
         @"hidden_images": self.hiddenImages ?: @[], @"hidden_schemes": self.hiddenSchemes ?: @[]
@@ -168,8 +206,16 @@ static BOOL DHRuleTextContains(id needle, id haystack) {
 - (BOOL)writeConfiguration:(NSError **)error {
     NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.decrypthelper.reconstructed.plist"];
     NSString *directory = [path stringByDeletingLastPathComponent];
-    if (![[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:error]) return NO;
-    return [[self mutableConfiguration] writeToFile:path atomically:YES];
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:error]) {
+        @synchronized ([DHConfig class]) { gDHPersistFailureCount++; }
+        return NO;
+    }
+    BOOL success = [[self mutableConfiguration] writeToFile:path atomically:YES];
+    if (!success) {
+        @synchronized ([DHConfig class]) { gDHPersistFailureCount++; }
+        if (error && !*error) *error = [NSError errorWithDomain:@"DHConfig" code:7 userInfo:@{NSLocalizedDescriptionKey: @"configuration could not be persisted"}];
+    }
+    return success;
 }
 
 - (BOOL)updateFromDictionary:(NSDictionary<NSString *,id> *)values error:(NSError **)error {
@@ -178,7 +224,7 @@ static BOOL DHRuleTextContains(id needle, id haystack) {
         return NO;
     }
     @synchronized (self) {
-        NSDictionary *booleanKeys = @{@"network": @"networkEnabled", @"crypto": @"cryptoEnabled", @"keychain": @"keychainEnabled", @"file": @"fileEnabled", @"dynamic": @"dynamicEnabled", @"anti_debug": @"antiDebugEnabled", @"jailbreak_hide": @"jailbreakHideEnabled", @"device_spoof": @"deviceSpoofEnabled", @"floating_ui": @"floatingUIEnabled", @"paused": @"paused"};
+        NSDictionary *booleanKeys = @{@"network": @"networkEnabled", @"crypto": @"cryptoEnabled", @"keychain": @"keychainEnabled", @"file": @"fileEnabled", @"dynamic": @"dynamicEnabled", @"anti_debug": @"antiDebugEnabled", @"jailbreak_hide": @"jailbreakHideEnabled", @"device_spoof": @"deviceSpoofEnabled", @"environment_probe": @"environmentProbeEnabled", @"environment": @"environmentProbeEnabled", @"floating_ui": @"floatingUIEnabled", @"webkit_probe": @"webkitProbeEnabled", @"webkit_probe_redact": @"webkitProbeRedact", @"paused": @"paused"};
         for (NSString *key in booleanKeys) {
             id value = values[key];
             if ([value respondsToSelector:@selector(boolValue)]) [self setValue:@([value boolValue]) forKey:booleanKeys[key]];
@@ -189,12 +235,25 @@ static BOOL DHRuleTextContains(id needle, id haystack) {
             if (number == 0 || number > UINT16_MAX) { if (error) *error = [NSError errorWithDomain:@"DHConfig" code:2 userInfo:@{NSLocalizedDescriptionKey: @"http_port must be between 1 and 65535"}]; return NO; }
             self.httpPort = (uint16_t)number;
         }
+        id maxBytesValue = values[@"webkit_probe_max_bytes"];
+        if ([maxBytesValue respondsToSelector:@selector(unsignedIntegerValue)]) {
+            NSUInteger maxBytes = [maxBytesValue unsignedIntegerValue];
+            if (maxBytes < 1024 || maxBytes > 1024 * 1024) {
+                if (error) *error = [NSError errorWithDomain:@"DHConfig" code:8 userInfo:@{NSLocalizedDescriptionKey: @"webkit_probe_max_bytes must be between 1024 and 1048576"}];
+                return NO;
+            }
+            self.webkitProbeMaxBytes = maxBytes;
+        }
         id device = values[@"device"];
         if ([device isKindOfClass:NSDictionary.class]) self.deviceValues = [device copy];
         id pausedCategories = values[@"paused_by_category"];
         if ([pausedCategories isKindOfClass:NSDictionary.class]) self.pausedByCategory = [self normalizedPausedCategories:pausedCategories];
         id noiseRules = values[@"noise_rules"];
         if ([noiseRules isKindOfClass:NSArray.class]) self.noiseRules = [self normalizedNoiseRules:noiseRules];
+        id webkitAllow = values[@"webkit_probe_allow_domains"];
+        id webkitDeny = values[@"webkit_probe_deny_domains"];
+        if ([webkitAllow isKindOfClass:NSArray.class]) self.webkitProbeAllowDomains = [self normalizedStringArray:webkitAllow fallback:self.webkitProbeAllowDomains];
+        if ([webkitDeny isKindOfClass:NSArray.class]) self.webkitProbeDenyDomains = [self normalizedStringArray:webkitDeny fallback:self.webkitProbeDenyDomains];
         NSArray *paths = values[@"hidden_paths"], *images = values[@"hidden_images"], *schemes = values[@"hidden_schemes"];
         if ([paths isKindOfClass:NSArray.class]) self.hiddenPaths = [self normalizedStringArray:paths fallback:self.hiddenPaths];
         if ([images isKindOfClass:NSArray.class]) self.hiddenImages = [self normalizedStringArray:images fallback:self.hiddenImages];
@@ -233,8 +292,10 @@ static BOOL DHRuleTextContains(id needle, id haystack) {
     if ([upper isEqualToString:@"KEYCHAIN"]) return self.keychainEnabled;
     if ([upper hasPrefix:@"FILE_"]) return self.fileEnabled;
     if ([upper isEqualToString:@"SYS_DYNAMIC"]) return self.dynamicEnabled;
-    if ([upper isEqualToString:@"CRYPTO"] || [upper isEqualToString:@"DIGEST"] || [upper isEqualToString:@"HMAC"] || [upper isEqualToString:@"ASYMMETRIC"]) return self.cryptoEnabled;
-    if ([upper isEqualToString:@"ENV_PROBE"]) return self.antiDebugEnabled || self.jailbreakHideEnabled || self.deviceSpoofEnabled;
+    if ([upper isEqualToString:@"CRYPTO"] || [upper isEqualToString:@"DIGEST"] ||
+        [upper isEqualToString:@"HMAC"] || [upper isEqualToString:@"ASYMMETRIC"] ||
+        [upper isEqualToString:@"EVP"] || [upper isEqualToString:@"RNG"]) return self.cryptoEnabled;
+    if ([upper isEqualToString:@"ENV_PROBE"]) return self.environmentProbeEnabled;
     return YES;
 }
 
@@ -261,6 +322,41 @@ static BOOL DHRuleTextContains(id needle, id haystack) {
     return [value isKindOfClass:NSString.class] ? value : nil;
 }
 
+- (BOOL)updateSpoofRuleOperation:(NSString *)operation
+                            kind:(NSString *)kind
+                           value:(NSString *)value
+                           error:(NSError **)error {
+    NSString *op = [operation isKindOfClass:NSString.class] ? operation.lowercaseString : @"";
+    NSString *ruleKind = [kind isKindOfClass:NSString.class] ? kind.lowercaseString : @"";
+    NSString *rule = [value isKindOfClass:NSString.class] ? [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] : @"";
+    NSDictionary *keys = @{@"path": @"hiddenPaths", @"paths": @"hiddenPaths", @"image": @"hiddenImages", @"images": @"hiddenImages", @"scheme": @"hiddenSchemes", @"schemes": @"hiddenSchemes"};
+    NSString *property = keys[ruleKind];
+    if (![op isEqualToString:@"add"] && ![op isEqualToString:@"remove"]) {
+        if (error) *error = [NSError errorWithDomain:@"DHConfig" code:5 userInfo:@{NSLocalizedDescriptionKey: @"operation must be add or remove"}];
+        return NO;
+    }
+    NSData *encodedRule = [rule dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *nulByte = [NSData dataWithBytes:"\0" length:1];
+    BOOL hasNUL = encodedRule && [encodedRule rangeOfData:nulByte options:0 range:NSMakeRange(0, encodedRule.length)].location != NSNotFound;
+    if (!property.length || !rule.length || rule.length > 512 || hasNUL) {
+        if (error) *error = [NSError errorWithDomain:@"DHConfig" code:6 userInfo:@{NSLocalizedDescriptionKey: @"kind and a bounded value are required"}];
+        return NO;
+    }
+    @synchronized (self) {
+        NSMutableArray *rules = [[self valueForKey:property] mutableCopy] ?: [NSMutableArray array];
+        NSUInteger index = [rules indexOfObjectPassingTest:^BOOL(NSString *candidate, NSUInteger idx, BOOL *stop) {
+            return [candidate caseInsensitiveCompare:rule] == NSOrderedSame;
+        }];
+        if ([op isEqualToString:@"add"]) {
+            if (index == NSNotFound) [rules addObject:rule];
+        } else if (index != NSNotFound) {
+            [rules removeObjectAtIndex:index];
+        }
+        [self setValue:[rules copy] forKey:property];
+        return [self writeConfiguration:error];
+    }
+}
+
 - (NSDictionary<NSString *,id> *)publicSnapshot {
     return @{
         @"network": @(self.networkEnabled),
@@ -271,7 +367,13 @@ static BOOL DHRuleTextContains(id needle, id haystack) {
         @"anti_debug": @(self.antiDebugEnabled),
         @"jailbreak_hide": @(self.jailbreakHideEnabled),
         @"device_spoof": @(self.deviceSpoofEnabled),
+        @"environment_probe": @(self.environmentProbeEnabled),
         @"floating_ui": @(self.floatingUIEnabled),
+        @"webkit_probe": @(self.webkitProbeEnabled),
+        @"webkit_probe_redact": @(self.webkitProbeRedact),
+        @"webkit_probe_max_bytes": @(self.webkitProbeMaxBytes),
+        @"webkit_probe_allow_domains": self.webkitProbeAllowDomains ?: @[],
+        @"webkit_probe_deny_domains": self.webkitProbeDenyDomains ?: @[],
         @"paused": @(self.paused),
         @"paused_by_category": self.pausedByCategory ?: @{},
         @"noise_rules": self.noiseRules ?: @[],

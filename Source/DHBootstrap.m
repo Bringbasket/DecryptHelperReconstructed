@@ -30,6 +30,10 @@ static void DHBootstrap(void) {
         DHInstallEVPHooks();
         DHInstallSpoofHooks();
         DHInstallNetworkHooks();
+        DHInstallNetworkExtensions();
+        DHInstallWebKitProbeHooks();
+        DHInstallWebSocketHooks();
+        DHInstallNetworkFrameworkHooks();
         DHStartHTTPServer();
         DHInstallFloatingUI();
     }

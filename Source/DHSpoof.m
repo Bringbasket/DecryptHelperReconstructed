@@ -12,6 +12,7 @@
 #import <errno.h>
 #import <stdint.h>
 #import <string.h>
+#import <strings.h>
 #import <sys/types.h>
 #import <unistd.h>
 
@@ -29,6 +30,12 @@
 #endif
 
 static __thread int gSpoofGuard;
+static __thread int gEnvironmentLogGuard;
+static NSUInteger gDHEnvironmentProbeCount;
+
+NSUInteger DHEnvironmentProbeCount(void) {
+    @synchronized ([DHConfig class]) { return gDHEnvironmentProbeCount; }
+}
 
 static const char *kHiddenPaths[] = {
     "/Applications/Cydia.app", "/Applications/Sileo.app", "/Applications/Zebra.app",
@@ -84,13 +91,55 @@ static BOOL DHShouldHideImage(const char *path) {
     return NO;
 }
 
-static void DHRecordEnvironmentProbe(NSString *name, NSString *detail) {
+BOOL DHSpoofMatchesImagePath(const char *path) {
+    return DHShouldHideImage(path);
+}
+
+static BOOL DHShouldHideScheme(NSString *scheme) {
+    if (!scheme.length || ![DHConfig shared].jailbreakHideEnabled) return NO;
+    NSArray *rules = [DHConfig shared].hiddenSchemes;
+    if (!rules.count) for (size_t i = 0; i < sizeof(kHiddenSchemes) / sizeof(kHiddenSchemes[0]); i++) {
+        if ([scheme rangeOfString:[NSString stringWithUTF8String:kHiddenSchemes[i]] options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    }
+    for (NSString *rule in rules) if ([scheme rangeOfString:rule options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    return NO;
+}
+
+static BOOL DHMatchesJailbreakEnvironmentName(const char *name) {
+    if (!name || ![DHConfig shared].jailbreakHideEnabled) return NO;
+    static const char *names[] = {"DYLD_INSERT_LIBRARIES", "_MSSafeMode", "JB_ROOT_PATH", "LIBHOOKER_CONFIGURATOR_PATH"};
+    for (size_t index = 0; index < sizeof(names) / sizeof(names[0]); index++) {
+        if (strcasecmp(name, names[index]) == 0) return YES;
+    }
+    return NO;
+}
+
+static BOOL DHHasDeviceRule(NSString *key) {
+    return [DHConfig shared].deviceSpoofEnabled && [[DHConfig shared] spoofValueForKey:key].length > 0;
+}
+
+static BOOL DHIgnoreEnvironmentPath(const char *path) {
+    if (!path) return NO;
+    return strstr(path, "/Library/Caches/IOSDecryptHub/") != NULL ||
+           strstr(path, "/Library/Preferences/com.decrypthelper.reconstructed.plist") != NULL ||
+           strstr(path, "/usr/lib/IOSDecryptHub/") != NULL;
+}
+
+static void DHRecordEnvironmentProbeImpl(NSString *name, NSString *detail) {
+    if (gEnvironmentLogGuard) return;
+    gEnvironmentLogGuard++;
+    @synchronized ([DHConfig class]) { gDHEnvironmentProbeCount++; }
     DHLogEntry *entry = [DHLogEntry entryWithCategory:@"ENV_PROBE"
                                             algorithm:name
                                             operation:@"observe"];
     entry.detail = detail;
     [[DHLogStore shared] append:entry];
+    gEnvironmentLogGuard--;
 }
+
+#define DHRecordEnvironmentProbe(name, detail) do { \
+    if ([DHConfig shared].environmentProbeEnabled) DHRecordEnvironmentProbeImpl((name), (detail)); \
+} while (0)
 
 typedef int (*DHPTraceFn)(int, pid_t, caddr_t, int);
 typedef int (*DHCSOpsFn)(pid_t, unsigned int, void *, size_t);
@@ -103,71 +152,35 @@ static DHSysctlFn gOriginalSysctl;
 static DHSysctlByNameFn gOriginalSysctlByName;
 
 static int DHHookedPtrace(int request, pid_t pid, caddr_t address, int data) {
-    if (request == PT_DENY_ATTACH && [DHConfig shared].antiDebugEnabled) {
-        DHRecordEnvironmentProbe(@"ptrace", @"PT_DENY_ATTACH hidden");
-        return 0;
-    }
-    return gOriginalPtrace ? gOriginalPtrace(request, pid, address, data) : 0;
+    int result = gOriginalPtrace ? gOriginalPtrace(request, pid, address, data) : -1;
+    BOOL matched = [DHConfig shared].antiDebugEnabled && request == PT_DENY_ATTACH;
+    DHRecordEnvironmentProbe(@"ptrace", [NSString stringWithFormat:@"request=%d result=%d matchedRule=%@", request, result, matched ? @YES : @NO]);
+    return result;
 }
 
 static int DHHookedCSOps(pid_t pid, unsigned int operation, void *userAddress, size_t size) {
     int result = gOriginalCSOps ? gOriginalCSOps(pid, operation, userAddress, size) : -1;
-    if (result == 0 && operation == CS_OPS_STATUS && userAddress && size >= sizeof(uint32_t) &&
-        [DHConfig shared].antiDebugEnabled) {
-        uint32_t *flags = userAddress;
-        if (*flags & CS_DEBUGGED) {
-            *flags &= ~CS_DEBUGGED;
-            DHRecordEnvironmentProbe(@"csops", @"CS_DEBUGGED cleared");
-        }
-    }
+    BOOL matched = [DHConfig shared].antiDebugEnabled && operation == CS_OPS_STATUS;
+    DHRecordEnvironmentProbe(@"csops", [NSString stringWithFormat:@"operation=%u result=%d size=%lu matchedRule=%@", operation, result, (unsigned long)size, matched ? @YES : @NO]);
     return result;
 }
 
 static int DHHookedSysctl(int *name, u_int count, void *oldValue, size_t *oldLength,
                           void *newValue, size_t newLength) {
     int result = gOriginalSysctl ? gOriginalSysctl(name, count, oldValue, oldLength, newValue, newLength) : -1;
-    if (result == 0 && [DHConfig shared].antiDebugEnabled && name && count >= 3 &&
-        name[0] == CTL_KERN && name[1] == KERN_PROC && name[2] == KERN_PROC_PID &&
-        oldValue && oldLength && *oldLength >= 0x24) {
-        uint32_t *processFlags = (uint32_t *)((uint8_t *)oldValue + 0x20);
-        if (*processFlags & P_TRACED) {
-            *processFlags &= ~P_TRACED;
-            DHRecordEnvironmentProbe(@"sysctl", @"P_TRACED cleared");
-        }
-    }
+    BOOL matched = [DHConfig shared].antiDebugEnabled && name && count >= 2 && name[0] == CTL_KERN && name[1] == KERN_PROC;
+    DHRecordEnvironmentProbe(@"sysctl", [NSString stringWithFormat:@"count=%u result=%d matchedRule=%@", count, result, matched ? @YES : @NO]);
     return result;
-}
-
-static int DHCopySysctlString(NSString *value, void *oldValue, size_t *oldLength) {
-    if (!oldLength || !value.length) return -1;
-    NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
-    size_t required = data.length + 1;
-    if (!oldValue) {
-        *oldLength = required;
-        return 0;
-    }
-    if (*oldLength < required) {
-        *oldLength = required;
-        errno = ENOMEM;
-        return -1;
-    }
-    memcpy(oldValue, data.bytes, data.length);
-    ((char *)oldValue)[data.length] = '\0';
-    *oldLength = required;
-    return 0;
 }
 
 static int DHHookedSysctlByName(const char *name, void *oldValue, size_t *oldLength,
                                 void *newValue, size_t newLength) {
-    if ([DHConfig shared].deviceSpoofEnabled && !newValue && name) {
-        NSString *key = nil;
-        if (strcmp(name, "hw.machine") == 0) key = @"hw_machine";
-        else if (strcmp(name, "hw.model") == 0) key = @"hw_model";
-        else if (strcmp(name, "kern.osproductversion") == 0) key = @"os_version";
-        NSString *value = key ? [[DHConfig shared] spoofValueForKey:key] : nil;
-        if (value.length) return DHCopySysctlString(value, oldValue, oldLength);
-    }
-    return gOriginalSysctlByName ? gOriginalSysctlByName(name, oldValue, oldLength, newValue, newLength) : -1;
+    int result = gOriginalSysctlByName ? gOriginalSysctlByName(name, oldValue, oldLength, newValue, newLength) : -1;
+    NSString *key = name ? [NSString stringWithUTF8String:name] : @"";
+    NSDictionary *mapping = @{@"hw.machine": @"hw_machine", @"hw.model": @"hw_model", @"kern.osversion": @"os_version"};
+    BOOL matched = mapping[key].length && DHHasDeviceRule(mapping[key]);
+    DHRecordEnvironmentProbe(@"sysctlbyname", [NSString stringWithFormat:@"name=%@ result=%d matchedRule=%@", key, result, matched ? @YES : @NO]);
+    return result;
 }
 
 typedef int (*DHStatFn)(const char *, struct stat *);
@@ -203,50 +216,56 @@ static BOOL DHBeginImageHideCheck(const char *path) {
 }
 
 static int DHHookedStat(const char *path, struct stat *buffer) {
-    if (DHBeginHideCheck(path)) { errno = ENOENT; return -1; }
-    return gOriginalStat ? gOriginalStat(path, buffer) : -1;
+    int result = gOriginalStat ? gOriginalStat(path, buffer) : -1;
+    if (DHIgnoreEnvironmentPath(path)) return result;
+    DHRecordEnvironmentProbe(@"stat", [NSString stringWithFormat:@"path=%@ result=%d matchedRule=%@", path ? [NSString stringWithUTF8String:path] : @"", result, DHBeginHideCheck(path) ? @YES : @NO]);
+    return result;
 }
 
 static int DHHookedLstat(const char *path, struct stat *buffer) {
-    if (DHBeginHideCheck(path)) { errno = ENOENT; return -1; }
-    return gOriginalLstat ? gOriginalLstat(path, buffer) : -1;
+    int result = gOriginalLstat ? gOriginalLstat(path, buffer) : -1;
+    if (DHIgnoreEnvironmentPath(path)) return result;
+    DHRecordEnvironmentProbe(@"lstat", [NSString stringWithFormat:@"path=%@ result=%d matchedRule=%@", path ? [NSString stringWithUTF8String:path] : @"", result, DHBeginHideCheck(path) ? @YES : @NO]);
+    return result;
 }
 
 static int DHHookedAccess(const char *path, int mode) {
-    if (DHBeginHideCheck(path)) { errno = ENOENT; return -1; }
-    return gOriginalAccess ? gOriginalAccess(path, mode) : -1;
+    int result = gOriginalAccess ? gOriginalAccess(path, mode) : -1;
+    if (DHIgnoreEnvironmentPath(path)) return result;
+    DHRecordEnvironmentProbe(@"access", [NSString stringWithFormat:@"path=%@ mode=%d result=%d matchedRule=%@", path ? [NSString stringWithUTF8String:path] : @"", mode, result, DHBeginHideCheck(path) ? @YES : @NO]);
+    return result;
 }
 
 static int DHHookedFaccessat(int fd, const char *path, int mode, int flags) {
-    if (DHBeginHideCheck(path)) { errno = ENOENT; return -1; }
-    return gOriginalFaccessat ? gOriginalFaccessat(fd, path, mode, flags) : -1;
+    int result = gOriginalFaccessat ? gOriginalFaccessat(fd, path, mode, flags) : -1;
+    if (DHIgnoreEnvironmentPath(path)) return result;
+    DHRecordEnvironmentProbe(@"faccessat", [NSString stringWithFormat:@"path=%@ result=%d matchedRule=%@", path ? [NSString stringWithUTF8String:path] : @"", result, DHBeginHideCheck(path) ? @YES : @NO]);
+    return result;
 }
 
 static int DHHookedFstatat(int fd, const char *path, struct stat *buffer, int flags) {
-    if (DHBeginHideCheck(path)) { errno = ENOENT; return -1; }
-    return gOriginalFstatat ? gOriginalFstatat(fd, path, buffer, flags) : -1;
+    int result = gOriginalFstatat ? gOriginalFstatat(fd, path, buffer, flags) : -1;
+    if (DHIgnoreEnvironmentPath(path)) return result;
+    DHRecordEnvironmentProbe(@"fstatat", [NSString stringWithFormat:@"path=%@ result=%d matchedRule=%@", path ? [NSString stringWithUTF8String:path] : @"", result, DHBeginHideCheck(path) ? @YES : @NO]);
+    return result;
 }
 
 static char *DHHookedGetenv(const char *name) {
-    if ([DHConfig shared].jailbreakHideEnabled && name &&
-        (strcmp(name, "DYLD_INSERT_LIBRARIES") == 0 ||
-         strcmp(name, "_MSSafeMode") == 0 ||
-         strcmp(name, "_SafeMode") == 0)) return NULL;
-    return gOriginalGetenv ? gOriginalGetenv(name) : NULL;
+    char *value = gOriginalGetenv ? gOriginalGetenv(name) : NULL;
+    DHRecordEnvironmentProbe(@"getenv", [NSString stringWithFormat:@"name=%@ present=%@ matchedRule=%@", name ? [NSString stringWithUTF8String:name] : @"", value ? @YES : @NO, DHMatchesJailbreakEnvironmentName(name) ? @YES : @NO]);
+    return value;
 }
 
 static int DHHookedUname(struct utsname *name) {
     int result = gOriginalUname ? gOriginalUname(name) : -1;
-    NSString *machine = [DHConfig shared].deviceSpoofEnabled ? [[DHConfig shared] spoofValueForKey:@"hw_machine"] : nil;
-    if (result == 0 && name && machine.length) {
-        strlcpy(name->machine, machine.UTF8String, sizeof(name->machine));
-    }
+    BOOL matched = DHHasDeviceRule(@"hw_machine") || DHHasDeviceRule(@"os_version");
+    DHRecordEnvironmentProbe(@"uname", [NSString stringWithFormat:@"result=%d machine=%@ matchedRule=%@", result, (result == 0 && name) ? [NSString stringWithUTF8String:name->machine] : @"", matched ? @YES : @NO]);
     return result;
 }
 
 static const char *DHHookedDyldImageName(uint32_t index) {
     const char *path = gOriginalDyldImageName ? gOriginalDyldImageName(index) : NULL;
-    if (path && DHBeginImageHideCheck(path)) return "/usr/lib/libSystem.B.dylib";
+    DHRecordEnvironmentProbe(@"dyld_image_name", [NSString stringWithFormat:@"index=%u path=%@ matchedRule=%@", index, path ? [NSString stringWithUTF8String:path] : @"", DHBeginImageHideCheck(path) ? @YES : @NO]);
     return path;
 }
 
@@ -272,52 +291,39 @@ static NSUUID *(*gOriginalIDFA)(id, SEL);
 static BOOL (*gOriginalCanOpenURL)(id, SEL, NSURL *);
 
 static NSString *DHSpoofedSystemVersion(id self, SEL cmd) {
-    NSString *value = [DHConfig shared].deviceSpoofEnabled ? [[DHConfig shared] spoofValueForKey:@"os_version"] : nil;
-    return value.length ? value : (gOriginalSystemVersion ? gOriginalSystemVersion(self, cmd) : @"");
+    NSString *value = gOriginalSystemVersion ? gOriginalSystemVersion(self, cmd) : @"";
+    DHRecordEnvironmentProbe(@"UIDevice.systemVersion", [NSString stringWithFormat:@"value=%@ matchedRule=%@", value ?: @"", DHHasDeviceRule(@"os_version") ? @YES : @NO]);
+    return value;
 }
 
 static NSString *DHSpoofedDeviceName(id self, SEL cmd) {
-    NSString *value = [DHConfig shared].deviceSpoofEnabled ? [[DHConfig shared] spoofValueForKey:@"device_name"] : nil;
-    return value.length ? value : (gOriginalDeviceName ? gOriginalDeviceName(self, cmd) : @"");
+    NSString *value = gOriginalDeviceName ? gOriginalDeviceName(self, cmd) : @"";
+    DHRecordEnvironmentProbe(@"UIDevice.name", [NSString stringWithFormat:@"value=%@ matchedRule=%@", value ?: @"", DHHasDeviceRule(@"device_name") ? @YES : @NO]);
+    return value;
 }
 
 static NSUUID *DHSpoofedIDFV(id self, SEL cmd) {
-    NSString *value = [DHConfig shared].deviceSpoofEnabled ? [[DHConfig shared] spoofValueForKey:@"idfv"] : nil;
-    NSUUID *uuid = value.length ? [[NSUUID alloc] initWithUUIDString:value] : nil;
-    return uuid ?: (gOriginalIDFV ? gOriginalIDFV(self, cmd) : nil);
+    NSUUID *value = gOriginalIDFV ? gOriginalIDFV(self, cmd) : nil;
+    DHRecordEnvironmentProbe(@"UIDevice.identifierForVendor", [NSString stringWithFormat:@"value=%@ matchedRule=%@", value.UUIDString ?: @"", DHHasDeviceRule(@"idfv") ? @YES : @NO]);
+    return value;
 }
 
 static NSOperatingSystemVersion DHSpoofedOSVersion(id self, SEL cmd) {
-    NSString *value = [DHConfig shared].deviceSpoofEnabled ? [[DHConfig shared] spoofValueForKey:@"os_version"] : nil;
-    if (!value.length) return gOriginalOSVersion ? gOriginalOSVersion(self, cmd) : (NSOperatingSystemVersion){0, 0, 0};
-    NSArray<NSString *> *parts = [value componentsSeparatedByString:@"."];
-    return (NSOperatingSystemVersion){
-        parts.count > 0 ? parts[0].integerValue : 0,
-        parts.count > 1 ? parts[1].integerValue : 0,
-        parts.count > 2 ? parts[2].integerValue : 0
-    };
+    NSOperatingSystemVersion value = gOriginalOSVersion ? gOriginalOSVersion(self, cmd) : (NSOperatingSystemVersion){0, 0, 0};
+    DHRecordEnvironmentProbe(@"NSProcessInfo.operatingSystemVersion", [NSString stringWithFormat:@"value=%ld.%ld.%ld matchedRule=%@", (long)value.majorVersion, (long)value.minorVersion, (long)value.patchVersion, DHHasDeviceRule(@"os_version") ? @YES : @NO]);
+    return value;
 }
 
 static NSUUID *DHSpoofedIDFA(id self, SEL cmd) {
-    NSString *value = [DHConfig shared].deviceSpoofEnabled ? [[DHConfig shared] spoofValueForKey:@"idfa"] : nil;
-    NSUUID *uuid = value.length ? [[NSUUID alloc] initWithUUIDString:value] : nil;
-    return uuid ?: (gOriginalIDFA ? gOriginalIDFA(self, cmd) : nil);
+    NSUUID *value = gOriginalIDFA ? gOriginalIDFA(self, cmd) : nil;
+    DHRecordEnvironmentProbe(@"ASIdentifierManager.advertisingIdentifier", [NSString stringWithFormat:@"value=%@ matchedRule=%@", value.UUIDString ?: @"", DHHasDeviceRule(@"idfa") ? @YES : @NO]);
+    return value;
 }
 
 static BOOL DHSpoofedCanOpenURL(id self, SEL cmd, NSURL *url) {
-    if ([DHConfig shared].jailbreakHideEnabled) {
-        const char *scheme = url.scheme.UTF8String;
-        NSArray<NSString *> *rules = [DHConfig shared].hiddenSchemes;
-        if (!rules.count) {
-            for (size_t i = 0; scheme && i < sizeof(kHiddenSchemes) / sizeof(kHiddenSchemes[0]); i++) {
-                if (strcasecmp(scheme, kHiddenSchemes[i]) == 0) return NO;
-            }
-        }
-        for (NSString *rule in rules) {
-            if (scheme && strcasecmp(scheme, rule.UTF8String) == 0) return NO;
-        }
-    }
-    return gOriginalCanOpenURL ? gOriginalCanOpenURL(self, cmd, url) : NO;
+    BOOL result = gOriginalCanOpenURL ? gOriginalCanOpenURL(self, cmd, url) : NO;
+    DHRecordEnvironmentProbe(@"UIApplication.canOpenURL", [NSString stringWithFormat:@"url=%@ result=%@ matchedRule=%@", url.absoluteString ?: @"", result ? @YES : @NO, DHShouldHideScheme(url.scheme) ? @YES : @NO]);
+    return result;
 }
 
 void DHInstallSpoofHooks(void) {

@@ -5,8 +5,11 @@
 #import "DHDump.h"
 #import "DHLogStore.h"
 #import "DHHookRegistry.h"
+#import "DHSpoof.h"
 #import "DHAnalysis.h"
+#import "DHFileBrowser.h"
 #import "DHWebConsole.h"
+#import "DHNetwork.h"
 #import <arpa/inet.h>
 #import <netinet/in.h>
 #import <sys/socket.h>
@@ -15,7 +18,9 @@
 
 static int gListenSocket = -1;
 static uint16_t gHTTPPort;
-static NSString * const kDHEngineVersion = @"0.4.0";
+static NSUInteger gHTTPResponseOK;
+static NSUInteger gHTTPResponseFailed;
+static NSString * const kDHEngineVersion = @"0.5.0";
 
 static NSDictionary *DHRuntimeSnapshot(void) {
     NSBundle *bundle = NSBundle.mainBundle;
@@ -32,7 +37,40 @@ static NSDictionary *DHRuntimeSnapshot(void) {
         @"noiseCount": @([DHLogStore shared].noiseCount),
         @"imageCount": @(DHLoadedImageSnapshot().count),
         @"dumpTaskCount": @([DHDumpManager sharedManager].taskSnapshots.count),
+        @"localOnly": @NO,
+        @"httpOk": @(__atomic_load_n(&gHTTPResponseOK, __ATOMIC_RELAXED)),
+        @"httpFailed": @(__atomic_load_n(&gHTTPResponseFailed, __ATOMIC_RELAXED)),
+        @"persistFailed": @(DHPersistFailureCount()),
+        @"environmentProbeCount": @(DHEnvironmentProbeCount()),
+        @"pipelineStats": [[DHLogStore shared] pipelineStats],
         @"config": [[DHConfig shared] publicSnapshot]
+    };
+}
+
+static NSDictionary *DHDiagnosticSnapshot(void) {
+    NSDictionary *hookDiagnostics = DHHookRegistryDiagnosticSnapshot();
+    NSArray *hooks = hookDiagnostics[@"hooks"] ?: @[];
+    NSUInteger failures = [hookDiagnostics[@"failedHookCount"] unsignedIntegerValue];
+    NSDictionary *diagEvents = [[DHLogStore shared] queryWithFilters:@{
+        @"category": @"DIAGNOSTIC", @"order": @"desc", @"limit": @100
+    } noise:NO];
+    return @{
+        @"ok": @(failures == 0),
+        @"hookCount": @(hooks.count),
+        @"failedHookCount": @(failures),
+        @"installedHookCount": hookDiagnostics[@"installedHookCount"] ?: @0,
+        @"failures": hookDiagnostics[@"failures"] ?: @[],
+        @"hooks": hooks,
+        @"events": diagEvents[@"events"] ?: @[],
+        @"localOnly": @NO,
+        @"httpOk": @(__atomic_load_n(&gHTTPResponseOK, __ATOMIC_RELAXED)),
+        @"httpFailed": @(__atomic_load_n(&gHTTPResponseFailed, __ATOMIC_RELAXED)),
+        @"persistFailed": @(DHPersistFailureCount()),
+        @"environmentProbeCount": @(DHEnvironmentProbeCount()),
+        @"hookFailureCount": @(failures),
+        @"captureCoverage": DHNetworkCaptureCoverage(),
+        @"pipelineStats": [[DHLogStore shared] pipelineStats],
+        @"runtime": DHRuntimeSnapshot()
     };
 }
 
@@ -115,6 +153,8 @@ static BOOL DHSendAll(int socketFD, const void *bytes, size_t length) {
 static NSData *DHJSONData(id object);
 
 static void DHSendResponse(int socketFD, NSInteger status, NSString *contentType, NSData *body) {
+    if (status >= 200 && status < 400) __atomic_fetch_add(&gHTTPResponseOK, 1, __ATOMIC_RELAXED);
+    else __atomic_fetch_add(&gHTTPResponseFailed, 1, __ATOMIC_RELAXED);
     NSString *reason = status == 200 ? @"OK" : status == 202 ? @"Accepted" : status == 204 ? @"No Content" :
                        status == 400 ? @"Bad Request" : status == 404 ? @"Not Found" :
                        status == 405 ? @"Method Not Allowed" : status == 409 ? @"Conflict" : @"Internal Server Error";
@@ -233,7 +273,7 @@ static NSArray *DHMCPTools(void) {
         }),
         DHMCPTool(@"start_dump", @"Queue an asynchronous Mach-O, ZIP, or IPA dump task.", @{
             @"image": @{ @"type": @"string" },
-            @"format": @{ @"type": @"string", @"enum": @[@"macho", @"zip", @"ipa"] },
+            @"format": @{ @"type": @"string", @"enum": @[@"macho", @"bin", @"zip", @"ipa"] },
             @"outputName": @{ @"type": @"string" }
         }),
         DHMCPTool(@"dump_status", @"Return the progress and result of a dump task.", @{
@@ -275,10 +315,14 @@ static NSArray *DHMCPTools(void) {
             @"anti_debug": @{ @"type": @"boolean" },
             @"jailbreak_hide": @{ @"type": @"boolean" },
             @"device_spoof": @{ @"type": @"boolean" },
+            @"environment_probe": @{ @"type": @"boolean" },
             @"device": @{ @"type": @"object" },
             @"hidden_paths": @{ @"type": @"array", @"items": @{ @"type": @"string" } },
             @"hidden_images": @{ @"type": @"array", @"items": @{ @"type": @"string" } },
             @"hidden_schemes": @{ @"type": @"array", @"items": @{ @"type": @"string" } }
+            , @"operation": @{ @"type": @"string", @"enum": @[@"add", @"remove"] },
+            @"kind": @{ @"type": @"string", @"enum": @[@"path", @"image", @"scheme"] },
+            @"value": @{ @"type": @"string" }
         }),
         DHMCPTool(@"list_hooks", @"Return hook installation status recorded during bootstrap.", @{})
 		,
@@ -308,7 +352,54 @@ static NSArray *DHMCPTools(void) {
 		DHMCPTool(@"objc_class_info", @"Inspect Objective-C methods, class methods, properties, protocols, and image.", @{
 			@"class": @{ @"type": @"string" },
 			@"methodLimit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @2000 }
-		})
+		}),
+		DHMCPTool(@"objc_resolve_imp", @"Resolve an Objective-C selector to its current IMP, declaring class, and image.", @{
+			@"class": @{ @"type": @"string" },
+			@"selector": @{ @"type": @"string" },
+			@"methodType": @{ @"type": @"string", @"enum": @[@"auto", @"instance", @"class"] }
+		}),
+		DHMCPTool(@"find_objc_methods", @"Find Objective-C methods by class, selector, declaring image, or current IMP image.", @{
+			@"class": @{ @"type": @"string" },
+			@"selector": @{ @"type": @"string" },
+			@"image": @{ @"type": @"string" },
+			@"impImage": @{ @"type": @"string" },
+			@"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @10000 }
+		}),
+		DHMCPTool(@"get_diag", @"Return hook health, diagnostic events, and runtime health information.", @{}),
+		DHMCPTool(@"list_loaded_images", @"Compatibility alias for list_images with the loaded image map.", @{
+			@"contains": @{ @"type": @"string" }, @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @1000 }
+		}),
+		DHMCPTool(@"list_files", @"List files and directories in the current App sandbox.", @{
+			@"path": @{ @"type": @"string" }, @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @2000 }
+		}),
+		DHMCPTool(@"read_file", @"Read a bounded preview of a regular file in the current App sandbox.", @{
+			@"path": @{ @"type": @"string" }, @"maxBytes": @{ @"type": @"integer", @"minimum": @1, @"maximum": @1048576 }
+		}),
+		DHMCPTool(@"get_noise_config", @"Return the configured Noise routing rules.", @{}),
+		DHMCPTool(@"set_noise_config", @"Replace the configured Noise routing rules.", @{
+			@"noise_rules": @{ @"type": @"array" }, @"rules": @{ @"type": @"array" }
+		}),
+		DHMCPTool(@"correlate_request", @"Query events associated with a request or context identifier.", @{
+			@"requestId": @{ @"type": @"string" }, @"contextId": @{ @"type": @"string" }, @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @2000 }
+		}),
+		DHMCPTool(@"find_string_refs", @"Find UTF-8 string references in a loaded image.", @{
+			@"image": @{ @"type": @"string" }, @"string": @{ @"type": @"string" }, @"target": @{ @"type": @"string" }, @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @2000 }
+		}),
+		DHMCPTool(@"find_selector_refs", @"Find selector string references in a loaded image.", @{
+			@"image": @{ @"type": @"string" }, @"selector": @{ @"type": @"string" }, @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @2000 }
+		}),
+		DHMCPTool(@"find_function_refs", @"Find pointer references to a symbol or address in a loaded image.", @{
+			@"image": @{ @"type": @"string" }, @"target": @{ @"type": @"string" }, @"limit": @{ @"type": @"integer", @"minimum": @1, @"maximum": @2000 }
+		}),
+		DHMCPTool(@"get_capture_coverage", @"Report active capture layers, runtime availability, and known blind spots.", @{}),
+		DHMCPTool(@"get_webkit_probe", @"Return the optional WKWebView document-start probe configuration.", @{}),
+		DHMCPTool(@"set_webkit_probe", @"Configure the optional WKWebView probe. Changes apply to new WKWebView instances.", @{
+			@"enabled": @{ @"type": @"boolean" }, @"redact": @{ @"type": @"boolean" },
+			@"maxBytes": @{ @"type": @"integer", @"minimum": @1024, @"maximum": @1048576 },
+			@"allowDomains": @{ @"type": @"array", @"items": @{ @"type": @"string" } },
+			@"denyDomains": @{ @"type": @"array", @"items": @{ @"type": @"string" } }
+		}),
+		DHMCPTool(@"get_capabilities", @"Return runtime capabilities and guidance for missing capture events.", @{})
     ];
 }
 
@@ -343,6 +434,36 @@ static NSDictionary *DHHandleMCP(NSDictionary *request) {
     if ([name isEqualToString:@"get_stats"]) {
         return DHMCPToolResult(requestID, DHRuntimeSnapshot());
     }
+    if ([name isEqualToString:@"get_diag"]) {
+        return DHMCPToolResult(requestID, DHDiagnosticSnapshot());
+    }
+    if ([name isEqualToString:@"get_capture_coverage"]) {
+        return DHMCPToolResult(requestID, DHNetworkCaptureCoverage());
+    }
+    if ([name isEqualToString:@"get_webkit_probe"]) {
+        return DHMCPToolResult(requestID, DHWebKitProbeSnapshot());
+    }
+    if ([name isEqualToString:@"set_webkit_probe"]) {
+        NSMutableDictionary *values = [NSMutableDictionary dictionary];
+        if ([arguments[@"enabled"] respondsToSelector:@selector(boolValue)]) values[@"webkit_probe"] = @([arguments[@"enabled"] boolValue]);
+        if ([arguments[@"redact"] respondsToSelector:@selector(boolValue)]) values[@"webkit_probe_redact"] = @([arguments[@"redact"] boolValue]);
+        if ([arguments[@"maxBytes"] respondsToSelector:@selector(unsignedIntegerValue)]) values[@"webkit_probe_max_bytes"] = arguments[@"maxBytes"];
+        if ([arguments[@"allowDomains"] isKindOfClass:NSArray.class]) values[@"webkit_probe_allow_domains"] = arguments[@"allowDomains"];
+        if ([arguments[@"denyDomains"] isKindOfClass:NSArray.class]) values[@"webkit_probe_deny_domains"] = arguments[@"denyDomains"];
+        NSError *error = nil;
+        BOOL success = [[DHConfig shared] updateFromDictionary:values error:&error];
+        return DHMCPToolResult(requestID, @{
+            @"success": @(success), @"probe": DHWebKitProbeSnapshot(),
+            @"error": error.localizedDescription ?: @""
+        });
+    }
+    if ([name isEqualToString:@"get_capabilities"]) {
+        return DHMCPToolResult(requestID, @{
+            @"capture": DHNetworkCaptureCoverage(),
+            @"pipeline": [[DHLogStore shared] pipelineStats],
+            @"guidance": @{ @"whenNoCryptoEvents": @"Inspect target image imports and statically linked crypto implementations, then correlate call stacks and memory references." }
+        });
+    }
     if ([name isEqualToString:@"get_spoof"]) {
         return DHMCPToolResult(requestID, [[DHConfig shared] publicSnapshot]);
     }
@@ -358,6 +479,39 @@ static NSDictionary *DHHandleMCP(NSDictionary *request) {
             if (images.count >= limit) break;
         }
         return DHMCPToolResult(requestID, images);
+    }
+    if ([name isEqualToString:@"list_loaded_images"]) {
+        NSString *contains = [arguments[@"contains"] isKindOfClass:NSString.class] ? arguments[@"contains"] : nil;
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 1000;
+        limit = MAX(1, MIN(limit, 1000));
+        NSMutableArray *images = [NSMutableArray array];
+        for (NSDictionary *image in DHLoadedImageSnapshot()) {
+            if (contains.length && ![image[@"name"] localizedCaseInsensitiveContainsString:contains]) continue;
+            [images addObject:image];
+            if (images.count >= limit) break;
+        }
+        return DHMCPToolResult(requestID, images);
+    }
+    if ([name isEqualToString:@"list_files"]) {
+        NSString *path = [arguments[@"path"] isKindOfClass:NSString.class] ? arguments[@"path"] : @"";
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 500;
+        return DHMCPToolResult(requestID, DHListSandboxFiles(path, limit));
+    }
+    if ([name isEqualToString:@"read_file"]) {
+        NSString *path = [arguments[@"path"] isKindOfClass:NSString.class] ? arguments[@"path"] : nil;
+        NSUInteger maxBytes = [arguments[@"maxBytes"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"maxBytes"] unsignedIntegerValue] : 1024 * 1024;
+        if (!path.length) return DHMCPToolResult(requestID, @{ @"error": @"path is required" });
+        return DHMCPToolResult(requestID, DHReadSandboxFile(path, maxBytes));
+    }
+    if ([name isEqualToString:@"get_noise_config"]) {
+        return DHMCPToolResult(requestID, @{ @"noise_rules": [DHConfig shared].noiseRules ?: @[] });
+    }
+    if ([name isEqualToString:@"set_noise_config"]) {
+        NSArray *rules = [arguments[@"noise_rules"] isKindOfClass:NSArray.class] ? arguments[@"noise_rules"] : arguments[@"rules"];
+        if (![rules isKindOfClass:NSArray.class]) return DHMCPToolResult(requestID, @{ @"error": @"noise_rules or rules array is required" });
+        NSError *error = nil;
+        BOOL success = [[DHConfig shared] updateFromDictionary:@{ @"noise_rules": rules } error:&error];
+        return DHMCPToolResult(requestID, @{ @"success": @(success), @"noise_rules": [DHConfig shared].noiseRules ?: @[], @"error": error.localizedDescription ?: @"" });
     }
     if ([name isEqualToString:@"dump_image"]) {
         NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
@@ -453,8 +607,13 @@ static NSDictionary *DHHandleMCP(NSDictionary *request) {
         return DHMCPToolResult(requestID, @{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"" });
     }
     if ([name isEqualToString:@"set_spoof"]) {
+        if ([arguments[@"operation"] isKindOfClass:NSString.class] || [arguments[@"kind"] isKindOfClass:NSString.class]) {
+            NSError *ruleError = nil;
+            BOOL ruleSuccess = [[DHConfig shared] updateSpoofRuleOperation:arguments[@"operation"] kind:arguments[@"kind"] value:arguments[@"value"] error:&ruleError];
+            return DHMCPToolResult(requestID, @{ @"success": @(ruleSuccess), @"config": [[DHConfig shared] publicSnapshot], @"error": ruleError.localizedDescription ?: @"" });
+        }
         NSMutableDictionary *values = [NSMutableDictionary dictionary];
-        for (NSString *key in @[@"anti_debug", @"jailbreak_hide", @"device_spoof", @"device", @"hidden_paths", @"hidden_images", @"hidden_schemes"]) if (arguments[key]) values[key] = arguments[key];
+        for (NSString *key in @[@"anti_debug", @"jailbreak_hide", @"device_spoof", @"environment_probe", @"device", @"hidden_paths", @"hidden_images", @"hidden_schemes"]) if (arguments[key]) values[key] = arguments[key];
         NSError *error = nil;
         BOOL success = [[DHConfig shared] updateFromDictionary:values error:&error];
         return DHMCPToolResult(requestID, @{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"" });
@@ -489,6 +648,27 @@ static NSDictionary *DHHandleMCP(NSDictionary *request) {
         NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 100;
         return DHMCPToolResult(requestID, DHFindXrefs(image, target, limit));
     }
+    if ([name isEqualToString:@"find_string_refs"]) {
+        NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        NSString *value = [arguments[@"string"] isKindOfClass:NSString.class] ? arguments[@"string"] : arguments[@"target"];
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 100;
+        if (![value isKindOfClass:NSString.class] || !value.length) return DHMCPToolResult(requestID, @{ @"error": @"string or target is required" });
+        return DHMCPToolResult(requestID, DHFindXrefs(image, [@"str:" stringByAppendingString:value], limit));
+    }
+    if ([name isEqualToString:@"find_selector_refs"]) {
+        NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        NSString *value = [arguments[@"selector"] isKindOfClass:NSString.class] ? arguments[@"selector"] : nil;
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 100;
+        if (!value.length) return DHMCPToolResult(requestID, @{ @"error": @"selector is required" });
+        return DHMCPToolResult(requestID, DHFindXrefs(image, [@"str:" stringByAppendingString:value], limit));
+    }
+    if ([name isEqualToString:@"find_function_refs"]) {
+        NSString *image = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        NSString *target = [arguments[@"target"] isKindOfClass:NSString.class] ? arguments[@"target"] : nil;
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 100;
+        if (!target.length) return DHMCPToolResult(requestID, @{ @"error": @"target is required" });
+        return DHMCPToolResult(requestID, DHFindXrefs(image, target, limit));
+    }
     if ([name isEqualToString:@"objc_classes"]) {
         NSString *contains = [arguments[@"contains"] isKindOfClass:NSString.class] ? arguments[@"contains"] : nil;
         NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 200;
@@ -499,8 +679,30 @@ static NSDictionary *DHHandleMCP(NSDictionary *request) {
         NSUInteger limit = [arguments[@"methodLimit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"methodLimit"] unsignedIntegerValue] : 500;
         return DHMCPToolResult(requestID, DHObjCClassInfo(className, limit));
     }
+    if ([name isEqualToString:@"objc_resolve_imp"]) {
+        NSString *className = [arguments[@"class"] isKindOfClass:NSString.class] ? arguments[@"class"] : nil;
+        NSString *selector = [arguments[@"selector"] isKindOfClass:NSString.class] ? arguments[@"selector"] : nil;
+        NSString *methodType = [arguments[@"methodType"] isKindOfClass:NSString.class] ? arguments[@"methodType"] : @"auto";
+        return DHMCPToolResult(requestID, DHObjCResolveIMP(className, selector, methodType));
+    }
+    if ([name isEqualToString:@"find_objc_methods"]) {
+        NSString *classQuery = [arguments[@"class"] isKindOfClass:NSString.class] ? arguments[@"class"] : nil;
+        NSString *selectorQuery = [arguments[@"selector"] isKindOfClass:NSString.class] ? arguments[@"selector"] : nil;
+        NSString *imageQuery = [arguments[@"image"] isKindOfClass:NSString.class] ? arguments[@"image"] : nil;
+        NSString *impImageQuery = [arguments[@"impImage"] isKindOfClass:NSString.class] ? arguments[@"impImage"] : nil;
+        NSUInteger limit = [arguments[@"limit"] respondsToSelector:@selector(unsignedIntegerValue)] ? [arguments[@"limit"] unsignedIntegerValue] : 500;
+        return DHMCPToolResult(requestID, DHFindObjCMethods(classQuery, selectorQuery, imageQuery, impImageQuery, limit));
+    }
     if ([name isEqualToString:@"query_events"]) {
         return DHMCPToolResult(requestID, [[DHLogStore shared] queryWithFilters:arguments noise:NO]);
+    }
+    if ([name isEqualToString:@"correlate_request"]) {
+        NSMutableDictionary *filters = [NSMutableDictionary dictionary];
+        if ([arguments[@"requestId"] isKindOfClass:NSString.class]) filters[@"requestId"] = arguments[@"requestId"];
+        if ([arguments[@"contextId"] isKindOfClass:NSString.class]) filters[@"contextId"] = arguments[@"contextId"];
+        filters[@"limit"] = arguments[@"limit"] ?: @200;
+        if (!filters[@"requestId"] && !filters[@"contextId"]) return DHMCPToolResult(requestID, @{ @"error": @"requestId or contextId is required" });
+        return DHMCPToolResult(requestID, [[DHLogStore shared] queryWithFilters:filters noise:NO]);
     }
     if ([name isEqualToString:@"query_noise"]) {
         return DHMCPToolResult(requestID, [[DHLogStore shared] queryWithFilters:arguments noise:YES]);
@@ -585,10 +787,16 @@ static void DHHandleClient(int socketFD) {
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/"]) {
             DHSendResponse(socketFD, 200, @"text/html; charset=utf-8",
                            [DHWebConsoleHTML() dataUsingEncoding:NSUTF8StringEncoding]);
-        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/health"]) {
+        } else if ([method isEqualToString:@"GET"] && ([path isEqualToString:@"/health"] || [path isEqualToString:@"/api/health"])) {
             NSMutableDictionary *health = [DHRuntimeSnapshot() mutableCopy];
             health[@"ok"] = @YES;
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(health));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/diag"]) {
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHDiagnosticSnapshot()));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/diag/download"]) {
+            NSDictionary *diagnostic = DHDiagnosticSnapshot();
+            NSArray *events = diagnostic[@"events"] ?: @[];
+            DHSendResponse(socketFD, 200, @"application/x-ndjson; charset=utf-8", DHJSONLData(events));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/events"]) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHEventSnapshot(target)));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/events/get"]) {
@@ -610,6 +818,10 @@ static void DHHandleClient(int socketFD) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData([[DHConfig shared] publicSnapshot]));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/hooks"]) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHHookRegistrySnapshot()));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/capture/coverage"]) {
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHNetworkCaptureCoverage()));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/webkit/probe"]) {
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHWebKitProbeSnapshot()));
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/macho"]) {
             DHSendResponse(socketFD, 200, @"application/json",
                            DHJSONData(DHImageMachOInfo(DHQueryValue(target, @"image"))));
@@ -654,8 +866,33 @@ static void DHHandleClient(int socketFD) {
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/objc/class"]) {
             NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"methodLimit"), 500, 2000);
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHObjCClassInfo(DHQueryValue(target, @"class"), limit)));
-        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/images"]) {
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/objc/resolve"]) {
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHObjCResolveIMP(
+                DHQueryValue(target, @"class"), DHQueryValue(target, @"selector"), DHQueryValue(target, @"methodType"))));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/objc/methods"]) {
+            NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"limit"), 500, 10000);
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHFindObjCMethods(
+                DHQueryValue(target, @"class"), DHQueryValue(target, @"selector"),
+                DHQueryValue(target, @"image"), DHQueryValue(target, @"impImage"), limit)));
+        } else if ([method isEqualToString:@"GET"] && ([path isEqualToString:@"/api/images"] || [path isEqualToString:@"/api/symbols/images"])) {
             DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHLoadedImageSnapshot()));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/files"]) {
+            NSUInteger limit = DHBoundedLimit(DHQueryValue(target, @"limit"), 500, 2000);
+            DHSendResponse(socketFD, 200, @"application/json", DHJSONData(DHListSandboxFiles(DHQueryValue(target, @"path"), limit)));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/files/preview"]) {
+            NSString *filePath = DHQueryValue(target, @"path");
+            NSUInteger maxBytes = DHBoundedLimit(DHQueryValue(target, @"maxBytes"), 1024 * 1024, 1024 * 1024);
+            NSDictionary *preview = filePath.length ? DHReadSandboxFile(filePath, maxBytes) : @{ @"error": @"path is required" };
+            DHSendResponse(socketFD, preview[@"error"] ? 400 : 200, @"application/json", DHJSONData(preview));
+        } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/files/download"]) {
+            NSError *fileError = nil;
+            NSString *filePath = DHSandboxFilePath(DHQueryValue(target, @"path"), &fileError);
+            NSDictionary *attributes = filePath ? [[NSFileManager defaultManager] attributesOfItemAtPath:filePath error:nil] : nil;
+            if (!filePath || ![attributes[NSFileType] isEqualToString:NSFileTypeRegular]) {
+                DHSendResponse(socketFD, 400, @"application/json", DHJSONData(@{ @"error": fileError.localizedDescription ?: @"regular sandbox file required" }));
+            } else {
+                DHSendFileResponse(socketFD, filePath);
+            }
         } else if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/dumps"]) {
             DHSendResponse(socketFD, 200, @"application/json",
                            DHJSONData([[DHDumpManager sharedManager] taskSnapshots]));
@@ -711,6 +948,17 @@ static void DHHandleClient(int socketFD) {
             NSError *error = nil;
             BOOL success = [request isKindOfClass:NSDictionary.class] && [[DHConfig shared] updateFromDictionary:request error:&error];
             DHSendResponse(socketFD, success ? 200 : 400, @"application/json", DHJSONData(@{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"invalid configuration" }));
+        } else if (([method isEqualToString:@"POST"] || [method isEqualToString:@"PUT"]) && [path isEqualToString:@"/api/webkit/probe"]) {
+            NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : @{};
+            NSMutableDictionary *values = [NSMutableDictionary dictionary];
+            if ([request[@"enabled"] respondsToSelector:@selector(boolValue)]) values[@"webkit_probe"] = @([request[@"enabled"] boolValue]);
+            if ([request[@"redact"] respondsToSelector:@selector(boolValue)]) values[@"webkit_probe_redact"] = @([request[@"redact"] boolValue]);
+            if ([request[@"maxBytes"] respondsToSelector:@selector(unsignedIntegerValue)]) values[@"webkit_probe_max_bytes"] = request[@"maxBytes"];
+            if ([request[@"allowDomains"] isKindOfClass:NSArray.class]) values[@"webkit_probe_allow_domains"] = request[@"allowDomains"];
+            if ([request[@"denyDomains"] isKindOfClass:NSArray.class]) values[@"webkit_probe_deny_domains"] = request[@"denyDomains"];
+            NSError *error = nil;
+            BOOL success = [[DHConfig shared] updateFromDictionary:values error:&error];
+            DHSendResponse(socketFD, success ? 200 : 400, @"application/json", DHJSONData(@{ @"success": @(success), @"probe": DHWebKitProbeSnapshot(), @"error": error.localizedDescription ?: @"" }));
         } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/capture"]) {
             NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
             NSString *category = [request[@"category"] isKindOfClass:NSString.class] ? request[@"category"] : nil;
@@ -732,7 +980,14 @@ static void DHHandleClient(int socketFD) {
         } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/spoof"]) {
             NSDictionary *request = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
             NSError *error = nil;
-            BOOL success = [request isKindOfClass:NSDictionary.class] && [[DHConfig shared] updateFromDictionary:request error:&error];
+            BOOL success = NO;
+            if ([request isKindOfClass:NSDictionary.class]) {
+                if ([request[@"operation"] isKindOfClass:NSString.class] || [request[@"kind"] isKindOfClass:NSString.class]) {
+                    success = [[DHConfig shared] updateSpoofRuleOperation:request[@"operation"] kind:request[@"kind"] value:request[@"value"] error:&error];
+                } else {
+                    success = [[DHConfig shared] updateFromDictionary:request error:&error];
+                }
+            }
             DHSendResponse(socketFD, success ? 200 : 400, @"application/json", DHJSONData(@{ @"success": @(success), @"config": [[DHConfig shared] publicSnapshot], @"error": error.localizedDescription ?: @"invalid spoof configuration" }));
         } else if ([path isEqualToString:@"/api/mcp"] && ![method isEqualToString:@"POST"]) {
             DHSendResponse(socketFD, 405, @"application/json",
@@ -782,7 +1037,10 @@ void DHStartHTTPServer(void) {
                 break;
             }
         }
-        if (socketFD < 0) return;
+        if (socketFD < 0) {
+            __atomic_fetch_add(&gHTTPResponseFailed, 1, __ATOMIC_RELAXED);
+            return;
+        }
         gListenSocket = socketFD;
         gHTTPPort = finalPort;
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{

@@ -5,6 +5,9 @@
 #import <mach/mach.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
+#if __has_include(<ptrauth.h>)
+#import <ptrauth.h>
+#endif
 #import <errno.h>
 #import <stdlib.h>
 #import <string.h>
@@ -368,17 +371,74 @@ NSArray<NSDictionary<NSString *, id> *> *DHFindXrefs(NSString *selector, NSStrin
     return matches;
 }
 
-static NSDictionary *DHAnalysisMethod(Method method, BOOL classMethod) {
+static uint64_t DHAnalysisIMPAddress(IMP implementation) {
+#if defined(__arm64e__) && __has_include(<ptrauth.h>)
+    implementation = (IMP)ptrauth_strip((void *)implementation, ptrauth_key_function_pointer);
+#endif
+    return (uint64_t)(uintptr_t)implementation;
+}
+
+static NSString *DHAnalysisImageForAddress(uint64_t address, NSString **symbol) {
+    Dl_info info = {0};
+    if (address) dladdr((const void *)(uintptr_t)address, &info);
+    if (symbol) *symbol = info.dli_sname ? DHAnalysisString(info.dli_sname) : @"";
+    return info.dli_fname ? DHAnalysisString(info.dli_fname) : @"";
+}
+
+static BOOL DHAnalysisTextMatches(NSString *value, NSString *query) {
+    if (!query.length) return YES;
+    if (!value.length) return NO;
+    return [value rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+static BOOL DHAnalysisImageMatches(NSString *image, NSString *query) {
+    if (!query.length) return YES;
+    if (!image.length) return NO;
+    return [image localizedCaseInsensitiveCompare:query] == NSOrderedSame ||
+        [image.lastPathComponent localizedCaseInsensitiveCompare:query] == NSOrderedSame ||
+        [image localizedCaseInsensitiveContainsString:query];
+}
+
+static Class DHAnalysisMethodOwner(Class cls, SEL selector, BOOL classMethod) {
+    if (!cls || !selector) return Nil;
+    for (Class cursor = cls; cursor; cursor = class_getSuperclass(cursor)) {
+        Class methodClass = classMethod ? object_getClass(cursor) : cursor;
+        unsigned int count = 0;
+        Method *methods = class_copyMethodList(methodClass, &count);
+        BOOL found = NO;
+        for (unsigned int index = 0; index < count; index++) {
+            if (method_getName(methods[index]) == selector) { found = YES; break; }
+        }
+        if (methods) free(methods);
+        if (found) return cursor;
+    }
+    return Nil;
+}
+
+static NSDictionary *DHAnalysisMethod(Method method, BOOL classMethod, Class queriedClass, Class owner) {
     SEL selector = method_getName(method);
     IMP implementation = method_getImplementation(method);
-    Dl_info info = {0}; dladdr((const void *)(uintptr_t)implementation, &info);
+    uint64_t impAddress = DHAnalysisIMPAddress(implementation);
+    NSString *symbol = nil;
+    NSString *implementationImage = DHAnalysisImageForAddress(impAddress, &symbol);
+    NSString *declaredImage = DHAnalysisString(owner ? class_getImageName(owner) : NULL);
     NSMutableDictionary *result = [@{
         @"selector": NSStringFromSelector(selector) ?: @"",
         @"types": [NSString stringWithUTF8String:method_getTypeEncoding(method) ?: ""] ?: @"",
-        @"implementation": DHAnalysisHex((uint64_t)(uintptr_t)implementation),
-        @"classMethod": @(classMethod)
+        @"implementation": DHAnalysisHex(impAddress),
+        @"currentIMP": DHAnalysisHex(impAddress),
+        @"classMethod": @(classMethod),
+        @"declaredClass": owner ? NSStringFromClass(owner) : @"",
+        @"declaringClass": owner ? NSStringFromClass(owner) : @"",
+        @"declaredImage": declaredImage ?: @"",
+        @"declaringImage": declaredImage ?: @"",
+        @"implementationImage": implementationImage ?: @"",
+        @"currentIMPImage": implementationImage ?: @"",
+        @"typeEncoding": [NSString stringWithUTF8String:method_getTypeEncoding(method) ?: ""] ?: @"",
+        @"pacNormalized": @YES,
+        @"inherited": @(owner && queriedClass && owner != queriedClass)
     } mutableCopy];
-    if (info.dli_sname) result[@"symbol"] = DHAnalysisString(info.dli_sname);
+    if (symbol.length) result[@"symbol"] = symbol;
     return result;
 }
 
@@ -401,13 +461,77 @@ NSArray<NSDictionary<NSString *, id> *> *DHObjCClassList(NSString *contains, NSU
     return result;
 }
 
-static NSArray *DHAnalysisMethodList(Class cls, BOOL classMethod, NSUInteger limit) {
-    unsigned int count = 0; Method *methods = class_copyMethodList(classMethod ? object_getClass(cls) : cls, &count);
+static NSArray *DHAnalysisMethodList(Class cls, BOOL classMethod, NSUInteger limit, BOOL includeInherited) {
     NSMutableArray *result = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
     NSUInteger max = DHAnalysisLimit(limit, 500, 2000);
-    for (unsigned int i = 0; i < count && result.count < max; i++) [result addObject:DHAnalysisMethod(methods[i], classMethod)];
-    if (methods) free(methods);
-    [result sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"selector"] compare:b[@"selector"]]; }];
+    for (Class cursor = cls; cursor && (includeInherited || cursor == cls); cursor = class_getSuperclass(cursor)) {
+        Class methodClass = classMethod ? object_getClass(cursor) : cursor;
+        unsigned int count = 0;
+        Method *methods = class_copyMethodList(methodClass, &count);
+        for (unsigned int index = 0; index < count && result.count < max; index++) {
+            SEL selector = method_getName(methods[index]);
+            NSString *key = NSStringFromSelector(selector) ?: @"";
+            if ([seen containsObject:key]) continue;
+            [seen addObject:key];
+            [result addObject:DHAnalysisMethod(methods[index], classMethod, cls, cursor)];
+        }
+        if (methods) free(methods);
+    }
+    [result sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSComparisonResult selectorOrder = [a[@"selector"] compare:b[@"selector"]];
+        return selectorOrder != NSOrderedSame ? selectorOrder : [a[@"declaredClass"] compare:b[@"declaredClass"]];
+    }];
+    return result;
+}
+
+static NSArray *DHAnalysisDeclaredIvars(Class cls) {
+    unsigned int count = 0;
+    Ivar *ivars = class_copyIvarList(cls, &count);
+    NSMutableArray *result = [NSMutableArray arrayWithCapacity:count];
+    for (unsigned int index = 0; index < count; index++) {
+        Ivar ivar = ivars[index];
+        const char *name = ivar_getName(ivar);
+        const char *type = ivar_getTypeEncoding(ivar);
+        [result addObject:@{
+            @"name": DHAnalysisString(name),
+            @"type": DHAnalysisString(type),
+            @"offset": @(ivar_getOffset(ivar)),
+            @"address": DHAnalysisHex((uint64_t)(uintptr_t)ivar)
+        }];
+    }
+    if (ivars) free(ivars);
+    return result;
+}
+
+static NSArray *DHAnalysisProperties(Class cls) {
+    unsigned int count = 0;
+    objc_property_t *properties = class_copyPropertyList(cls, &count);
+    NSMutableArray *result = [NSMutableArray arrayWithCapacity:count];
+    for (unsigned int index = 0; index < count; index++) {
+        objc_property_t property = properties[index];
+        [result addObject:@{
+            @"name": DHAnalysisString(property_getName(property)),
+            @"attributes": DHAnalysisString(property_getAttributes(property))
+        }];
+    }
+    if (properties) free(properties);
+    return result;
+}
+
+static NSArray *DHAnalysisProtocols(Class cls) {
+    NSMutableArray *result = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
+    for (Class cursor = cls; cursor; cursor = class_getSuperclass(cursor)) {
+        unsigned int count = 0;
+        Protocol *__unsafe_unretained *protocols = class_copyProtocolList(cursor, &count);
+        for (unsigned int index = 0; index < count; index++) {
+            NSString *name = DHAnalysisString(protocol_getName(protocols[index]));
+            if (name.length && ![seen containsObject:name]) { [seen addObject:name]; [result addObject:name]; }
+        }
+        if (protocols) free(protocols);
+    }
+    [result sortUsingSelector:@selector(compare:)];
     return result;
 }
 
@@ -419,18 +543,85 @@ NSDictionary<NSString *, id> *DHObjCClassInfo(NSString *className, NSUInteger me
         @"superclass": class_getSuperclass(cls) ? NSStringFromClass(class_getSuperclass(cls)) : @"",
         @"image": DHAnalysisString(class_getImageName(cls)),
         @"instanceSize": @(class_getInstanceSize(cls)),
-        @"methods": DHAnalysisMethodList(cls, NO, methodLimit),
-        @"classMethods": DHAnalysisMethodList(cls, YES, methodLimit)
+        @"methods": DHAnalysisMethodList(cls, NO, methodLimit, YES),
+        @"classMethods": DHAnalysisMethodList(cls, YES, methodLimit, YES),
+        @"declaredMethods": DHAnalysisMethodList(cls, NO, methodLimit, NO),
+        @"declaredClassMethods": DHAnalysisMethodList(cls, YES, methodLimit, NO),
+        @"superclassImage": DHAnalysisString(class_getSuperclass(cls) ? class_getImageName(class_getSuperclass(cls)) : NULL),
+        @"metaclass": DHAnalysisHex((uint64_t)(uintptr_t)object_getClass(cls))
     } mutableCopy];
-    unsigned int propertyCount = 0; objc_property_t *properties = class_copyPropertyList(cls, &propertyCount);
-    NSMutableArray *propertyResult = [NSMutableArray array];
-    for (unsigned int i = 0; i < propertyCount; i++) [propertyResult addObject:@{ @"name": DHAnalysisString(property_getName(properties[i])), @"attributes": DHAnalysisString(property_getAttributes(properties[i])) }];
-    if (properties) free(properties);
-    result[@"properties"] = propertyResult;
-    unsigned int protocolCount = 0; Protocol *__unsafe_unretained *protocols = class_copyProtocolList(cls, &protocolCount);
-    NSMutableArray *protocolResult = [NSMutableArray array];
-    for (unsigned int i = 0; i < protocolCount; i++) [protocolResult addObject:DHAnalysisString(protocol_getName(protocols[i]))];
-    if (protocols) free(protocols);
-    result[@"protocols"] = protocolResult;
+    result[@"properties"] = DHAnalysisProperties(cls);
+    result[@"classProperties"] = DHAnalysisProperties(object_getClass(cls));
+    result[@"ivars"] = DHAnalysisDeclaredIvars(cls);
+    result[@"protocols"] = DHAnalysisProtocols(cls);
+    return result;
+}
+
+NSDictionary<NSString *, id> *DHObjCResolveIMP(NSString *className, NSString *selectorName, NSString *methodType) {
+    if (![className isKindOfClass:NSString.class] || !className.length ||
+        ![selectorName isKindOfClass:NSString.class] || !selectorName.length) {
+        return @{ @"error": @"class and selector are required" };
+    }
+    Class cls = NSClassFromString(className);
+    SEL selector = NSSelectorFromString(selectorName);
+    if (!cls || !selector) return @{ @"error": @"class or selector not found" };
+    NSString *kind = [methodType.lowercaseString isEqualToString:@"class"] ? @"class" :
+        ([methodType.lowercaseString isEqualToString:@"instance"] ? @"instance" : @"auto");
+    BOOL classMethod = [kind isEqualToString:@"class"];
+    Method method = class_getInstanceMethod(classMethod ? object_getClass(cls) : cls, selector);
+    if (!method && [kind isEqualToString:@"auto"]) {
+        classMethod = YES;
+        method = class_getInstanceMethod(object_getClass(cls), selector);
+    }
+    if (!method) return @{ @"error": @"selector not found", @"class": className, @"selector": selectorName };
+    Class owner = DHAnalysisMethodOwner(cls, selector, classMethod);
+    NSMutableDictionary *result = [DHAnalysisMethod(method, classMethod, cls, owner) mutableCopy];
+    if (!result) result = [NSMutableDictionary dictionary];
+    result[@"class"] = NSStringFromClass(cls) ?: className;
+    result[@"methodType"] = classMethod ? @"class" : @"instance";
+    result[@"found"] = @YES;
+    return result;
+}
+
+NSArray<NSDictionary<NSString *, id> *> *DHFindObjCMethods(NSString *classQuery,
+                                                            NSString *selectorQuery,
+                                                            NSString *imageQuery,
+                                                            NSString *impImageQuery,
+                                                            NSUInteger limit) {
+    NSUInteger max = DHAnalysisLimit(limit, 500, 10000);
+    int count = objc_getClassList(NULL, 0);
+    if (count <= 0) return @[];
+    Class *classes = (Class *)malloc(sizeof(Class) * (size_t)count);
+    if (!classes) return @[];
+    count = objc_getClassList(classes, count);
+    NSMutableArray *result = [NSMutableArray array];
+    for (int classIndex = 0; classIndex < count && result.count < max; classIndex++) {
+        Class cls = classes[classIndex];
+        NSString *className = NSStringFromClass(cls) ?: @"";
+        NSString *classImage = DHAnalysisString(class_getImageName(cls));
+        if (!DHAnalysisTextMatches(className, classQuery) && !DHAnalysisTextMatches(classImage, classQuery)) continue;
+        for (NSUInteger methodKind = 0; methodKind < 2 && result.count < max; methodKind++) {
+            BOOL classMethod = methodKind == 1;
+            Class methodClass = classMethod ? object_getClass(cls) : cls;
+            unsigned int methodCount = 0;
+            Method *methods = class_copyMethodList(methodClass, &methodCount);
+            for (unsigned int index = 0; index < methodCount && result.count < max; index++) {
+                Method method = methods[index];
+                NSString *selector = NSStringFromSelector(method_getName(method)) ?: @"";
+                if (!DHAnalysisTextMatches(selector, selectorQuery)) continue;
+                Class owner = cls;
+                IMP implementation = method_getImplementation(method);
+                NSString *impImage = DHAnalysisImageForAddress(DHAnalysisIMPAddress(implementation), NULL);
+                if (!DHAnalysisImageMatches(classImage, imageQuery) || !DHAnalysisImageMatches(impImage, impImageQuery)) continue;
+                [result addObject:DHAnalysisMethod(method, classMethod, cls, owner)];
+            }
+            if (methods) free(methods);
+        }
+    }
+    free(classes);
+    [result sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSComparisonResult classOrder = [a[@"declaredClass"] compare:b[@"declaredClass"]];
+        return classOrder != NSOrderedSame ? classOrder : [a[@"selector"] compare:b[@"selector"]];
+    }];
     return result;
 }

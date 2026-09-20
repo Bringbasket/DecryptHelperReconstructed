@@ -7,9 +7,16 @@
 #import <CommonCrypto/CommonDigest.h>
 #import <CommonCrypto/CommonHMAC.h>
 #import <CommonCrypto/CommonKeyDerivation.h>
+#import <CommonCrypto/CommonRandom.h>
+#import <Security/SecRandom.h>
 #import <pthread.h>
 
 static __thread int gCryptoLogGuard;
+
+typedef int (*DHCCRandomGenerateBytesFn)(void *, size_t);
+typedef OSStatus (*DHSecRandomCopyBytesFn)(SecRandomRef, size_t, uint8_t *);
+static DHCCRandomGenerateBytesFn gOriginalCCRandomGenerateBytes;
+static DHSecRandomCopyBytesFn gOriginalSecRandomCopyBytes;
 
 static NSString *DHBase64(const void *bytes, size_t length) {
     if (!bytes || !length) return @"";
@@ -44,6 +51,21 @@ static void DHLogCrypto(NSString *category,
         [[DHLogStore shared] append:entry];
     }
     gCryptoLogGuard--;
+}
+
+static int DHHookedCCRandomGenerateBytes(void *bytes, size_t count) {
+    int status = gOriginalCCRandomGenerateBytes ? gOriginalCCRandomGenerateBytes(bytes, count) : -1;
+    DHLogCrypto(@"RNG", @"CCRandomGenerateBytes", @"generate", NULL, 0,
+                status == 0 ? bytes : NULL, status == 0 ? count : 0, @{ @"status": @(status) });
+    return status;
+}
+
+static OSStatus DHHookedSecRandomCopyBytes(SecRandomRef random, size_t count, uint8_t *bytes) {
+    OSStatus status = gOriginalSecRandomCopyBytes ? gOriginalSecRandomCopyBytes(random, count, bytes) : errSecUnimplemented;
+    DHLogCrypto(@"RNG", @"SecRandomCopyBytes", @"generate", NULL, 0,
+                status == errSecSuccess ? bytes : NULL, status == errSecSuccess ? count : 0,
+                @{ @"status": @(status), @"defaultSource": @(random == kSecRandomDefault) });
+    return status;
 }
 
 typedef unsigned char *(*DHDigestFn)(const void *, CC_LONG, unsigned char *);
@@ -579,7 +601,11 @@ void DHInstallCommonCryptoHooks(void) {
             {"CCCryptorReset", (void *)DHHookedCCCryptorReset, (void **)&gOriginalCCCryptorReset},
             {"CCCryptorRelease", (void *)DHHookedCCCryptorRelease, (void **)&gOriginalCCCryptorRelease},
             {"CCKeyDerivationPBKDF", (void *)DHHookedCCKeyDerivationPBKDF,
-             (void **)&gOriginalCCKeyDerivationPBKDF}
+             (void **)&gOriginalCCKeyDerivationPBKDF},
+            {"CCRandomGenerateBytes", (void *)DHHookedCCRandomGenerateBytes,
+             (void **)&gOriginalCCRandomGenerateBytes},
+            {"SecRandomCopyBytes", (void *)DHHookedSecRandomCopyBytes,
+             (void **)&gOriginalSecRandomCopyBytes}
         };
         gDigestCaptures = [NSMutableDictionary dictionary];
         gHmacCaptures = [NSMutableDictionary dictionary];

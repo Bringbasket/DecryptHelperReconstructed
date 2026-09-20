@@ -39,6 +39,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)clearNoise;
 - (NSString *)logFilePath;
 - (NSString *)noiseLogFilePath;
+- (NSString *)journalFilePath;
+- (NSDictionary<NSString *, id> *)pipelineStats;
 
 @end
 
